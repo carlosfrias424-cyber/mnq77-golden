@@ -48,6 +48,12 @@ def bar_open(ts, minutes):
 
 
 def px_of(rec):
+    raw = getattr(rec, "pretty_price", None)
+    if raw is not None:
+        try:
+            return float(raw)
+        except Exception:
+            pass
     raw = getattr(rec, "price", None)
     if raw is None:
         return None
@@ -228,25 +234,7 @@ def path_hit(side, entry, prints):
     return "OPEN", None, mae, mfe
 
 
-def fetch_trades(key, start_iso, end_iso):
-    import databento as db
-    client = db.Historical(key=key)
-    symbol = os.environ.get("MNQ_DB_SYMBOL") or "MNQZ6"
-    stype = os.environ.get("MNQ_DB_STYPE") or "raw_symbol"
-    print("databento", symbol, stype, start_iso, "->", end_iso, flush=True)
-    try:
-        data = client.timeseries.get(
-            dataset="GLBX.MDP3", schema="trades",
-            symbols=[symbol], stype_in=stype,
-            start=start_iso, end=end_iso,
-        )
-    except Exception as e:
-        print("MNQZ6 failed", e, "trying MNQ.c.0", flush=True)
-        data = client.timeseries.get(
-            dataset="GLBX.MDP3", schema="trades",
-            symbols=["MNQ.c.0"], stype_in="continuous",
-            start=start_iso, end=end_iso,
-        )
+def ingest(data):
     rows = []
     for rec in data:
         px = px_of(rec)
@@ -255,8 +243,38 @@ def fetch_trades(key, start_iso, end_iso):
             continue
         sz = sz_of(rec)
         rows.append((ts, px, sz, side_delta(rec, sz)))
+    return rows
+
+
+def fetch_trades(key):
+    import databento as db
+    client = db.Historical(key=key)
+    symbol = os.environ.get("MNQ_DB_SYMBOL") or "MNQZ6"
+    stype = os.environ.get("MNQ_DB_STYPE") or "raw_symbol"
+    chunks = [
+        ("2026-09-16T08:50:00", "2026-09-16T17:00:00"),
+        ("2026-09-17T08:50:00", "2026-09-17T17:00:00"),
+        ("2026-09-18T08:50:00", "2026-09-18T17:00:00"),
+    ]
+    rows = []
+    for a, b in chunks:
+        print("databento get_range", symbol, a, "->", b, flush=True)
+        try:
+            data = client.timeseries.get_range(
+                dataset="GLBX.MDP3", schema="trades",
+                symbols=[symbol], stype_in=stype, start=a, end=b,
+            )
+        except Exception as e:
+            print(" ", symbol, e, "— trying MNQ.c.0", flush=True)
+            data = client.timeseries.get_range(
+                dataset="GLBX.MDP3", schema="trades",
+                symbols=["MNQ.c.0"], stype_in="continuous", start=a, end=b,
+            )
+        part = ingest(data)
+        print("  prints", len(part), flush=True)
+        rows.extend(part)
     rows.sort()
-    print("prints", len(rows), flush=True)
+    print("prints total", len(rows), flush=True)
     return rows
 
 
@@ -266,16 +284,13 @@ def main():
     if not key:
         sys.exit("DATABENTO_API_KEY missing in .env")
     alerts = load_alerts()
-    # 03:50 CDT warmup so a 5m bar exists before 04:00
-    start = datetime(2026, 9, 16, 3, 50, tzinfo=TZ).astimezone(timezone.utc)
-    end = datetime(2026, 9, 18, 12, 0, tzinfo=TZ).astimezone(timezone.utc)
-    prints = fetch_trades(key, start.strftime("%Y-%m-%dT%H:%M:%S"), end.strftime("%Y-%m-%dT%H:%M:%S"))
+    prints = fetch_trades(key)
     if not prints:
         sys.exit("no databento prints")
 
     m1 = m5 = None
     closed_1, closed_5 = deque(), deque()
-    closed_events = []  # (candle, m5_snap, closed_5_snap)
+    closed_events = []
 
     def roll(minutes, ts, px, vol, dlt):
         nonlocal m1, m5
@@ -343,8 +358,6 @@ def main():
         key = f"{kind}@{rpx:.2f}"
         if key != last_key:
             last_key = key
-            side_locked.pop(key, None) if False else None
-            # new rail: keep other locks, reset this key's lock only if brand new visit
             if key not in side_locked:
                 side_locked[key] = bounce_from_name(kind)
 
