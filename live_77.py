@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""7/7 bounce support / fade resistance. Dual UNPLUGGED. DEMO SIM ON.
+"""7/7 sniper B. Dual UNPLUGGED. DEMO SIM ON.
 
-YESTERDAY'S FILE. Three bugfixes only:
-  1) close must sit on the 6-pt shelf (kills 15-pt dump fades)
-  2) spent is per RAIL, not per side (no flip / BRT reclaim)
-  3) BE off — do not run manage_be20
+Fire LIVE (not on 1m close):
+  1) this 1m wick tags the last-webhook rail (within 10)
+  2) last print holds the SIDE (bounce over / fade under)
+  3) tape leans with the trade
+  4) last print STILL within 10 of the rail  ← no chase
+Strip: 6-pt close cage. No WAIT_C2. No volume gate.
 
-THIS PATCH: a failed 1m does NOT mute the sit. Skip does NOT spend the rail.
-Next closed 1m on the same rail can still fire. Spent only after a real send.
-Lock: 120s after a send, then clear.
-
-Still: fire on the closed 1m that tagged, if hold + tape.
-No volume-not-expanding. No WAIT_C2. No Dual.
+If the reaction already ran >10 off the rail → skip (chase).
+One attempt per forming 1m. Spent only after a real send.
+Lock: 120s after send, then clear. place_struct40 still blocks net!=0.
 
 Pine name is the side:
-  H4L H1L PDL PWL → bounce long (price must hold OVER)
-  H4H H1H PDH PWH → fade short  (price must hold UNDER)
-  H4 / H1 (old pine) → LOCK from first 1m close of the visit
+  H4L H1L PDL PWL → bounce long
+  H4H H1H PDH PWH → fade short
+  H4 / H1 → LOCK from first print off the rail this visit
   OPEN / ONH / ONL / EMA → not rails
 
 Book: 5 MNQ DEMO, stop 20, TP 40, BE off. Session 04:00–11:30 CT M–F.
-Rail = last webhook. Symbol MNQZ6.
-Spent: that rail is dead until price is 20 pts away — AFTER a send only.
+Symbol MNQZ6. Rail = last webhook.
 """
 from __future__ import annotations
 
@@ -42,9 +40,8 @@ sys.path.insert(0, str(ROOT / "apps" / "watcher7"))
 
 FIRE = True
 TICK, WATCH = 0.25, 10.0
-ARM_PTS = 6.0  # close must be within 6 of the rail
 STOP_PTS, TP_PTS, BE_PTS, QTY = 20.0, 40.0, 0.0, 5
-OPP_RESET = 20.0  # rail spent until price is 20 pts away
+OPP_RESET = 20.0
 SESSION_START, SESSION_END = 4 * 60, 11 * 60 + 30
 TZ = ZoneInfo("America/Chicago")
 HOLIDAYS = {date(2026, 9, 7), date(2026, 11, 26), date(2026, 12, 25)}
@@ -52,7 +49,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "yesterday_shelf6_rescore"
+NOTE = "sniper_live_tag10"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -112,10 +109,6 @@ def last_net():
 
 
 def locked():
-    """One position. BE off → be20 is stale. Do not 16h-ghost.
-    120s after send = fill in flight. Then drop the lock.
-    place_struct40 still refuses if Tradovate net != 0.
-    """
     if BE_PTS:
         net = last_net()
         if net not in (0, None) and abs(int(net)) > 0:
@@ -198,7 +191,6 @@ class Rail:
 
 
 def load_pois() -> list[Rail]:
-    """Last valid webhook only. No 5-day stash."""
     if not POI.exists():
         return []
     best = None
@@ -258,26 +250,23 @@ class Machine:
     picture: str = ""
     bounce: bool = True
     side_locked: bool | None = None
-    visit_dead: bool = False
     spent_fill: bool = False
+    tried_t0: float | None = None
 
-    def reset_attempt(self):
+    def clear_visit(self):
         self.phase = "IDLE"
         self.side = None
         self.picture = ""
-
-    def clear_visit(self):
-        self.reset_attempt()
-        self.visit_dead = False
         self.spent_fill = False
         self.side_locked = None
+        self.tried_t0 = None
 
     def out(self, reason, go=False):
         return dict(
             phase=self.phase, setup=self.picture, side=self.side,
             picture=self.picture, go=bool(FIRE and go), paper=go,
             fire_enabled=FIRE, reason=reason, bounce=self.bounce,
-            side_locked=self.side_locked, visit_dead=self.visit_dead,
+            side_locked=self.side_locked,
         )
 
 
@@ -306,7 +295,6 @@ def send_book(side: str, name: str, px: float, last: float):
 
 
 def expire_spent(spent: dict, last_px: float):
-    """Rail is free again once price is 20 pts away from it."""
     dead = []
     for k, px in spent.items():
         try:
@@ -330,16 +318,15 @@ def main():
         return
     emit(event="seven_start", fire=FIRE, book=BOOK, note=NOTE, symbol=SYMBOL,
          session_start="04:00", session_end="11:30", vol_src="databento_trades",
-         dual="UNPLUGGED", opp_reset=OPP_RESET, arm_pts=ARM_PTS, be=BE_PTS,
-         lock="120s_then_clear")
+         dual="UNPLUGGED", opp_reset=OPP_RESET, watch=WATCH, be=BE_PTS,
+         lock="120s_then_clear", fire_mode="sniper_live")
 
     m = Machine()
     last_poi = 0.0
-    last_1m_t0 = None
     last_hb = 0.0
     rails: list[Rail] = []
     n = 0
-    spent = {}  # rail.key -> rail.px  AFTER a real send only
+    spent = {}
     spent_day = datetime.now(TZ).date()
 
     while True:
@@ -378,19 +365,20 @@ def main():
             time.sleep(0.25)
             continue
 
-        closed = dbvol.last_closed_1()
         forming = dbvol.m1
-        bar_lo = min(x for x in (
-            getattr(closed, "l", None), getattr(forming, "l", None), last_px) if x is not None)
-        bar_hi = max(x for x in (
-            getattr(closed, "h", None), getattr(forming, "h", None), last_px) if x is not None)
+        if forming is None:
+            time.sleep(0.25)
+            continue
+        bar_lo = min(forming.l, last_px)
+        bar_hi = max(forming.h, last_px)
+        t0 = forming.t0
 
         rail = alert_rail(rails, bar_lo, bar_hi)
         rec = dict(
             event="score", mid=round(last_px, 3),
             bar=[round(bar_lo, 3), round(bar_hi, 3)],
             vol_src="databento_trades", prints=dbvol.prints(),
-            submit=False, dual="UNPLUGGED", symbol=SYMBOL,
+            submit=False, dual="UNPLUGGED", symbol=SYMBOL, fire_mode="sniper_live",
         )
 
         if rail is None:
@@ -408,11 +396,6 @@ def main():
             m = Machine(key=rail.key)
         rec.update(poi=rail.key, px=rail.px, phase=m.phase)
 
-        new_1m = closed is not None and closed.t0 != last_1m_t0
-        if new_1m:
-            last_1m_t0 = closed.t0
-
-        in_pos = locked()
         if m.spent_fill:
             if n % 20 == 0:
                 rec["reason"] = "same_sweep_spent"
@@ -420,17 +403,7 @@ def main():
             time.sleep(0.25)
             continue
 
-        if not new_1m or closed is None:
-            rec["reason"] = "idle_wait_1m"
-            if n % 20 == 0:
-                emit(**rec)
-            time.sleep(0.25)
-            continue
-
-        loc = loc_over(closed.c, rail.px)
-        if loc is None:
-            loc = loc_over(closed.o, rail.px)
-
+        loc = loc_over(last_px, rail.px)
         if m.side_locked is None:
             named = bounce_from_name(rail.kind)
             if named is not None:
@@ -438,11 +411,11 @@ def main():
                 rec["side_lock"] = "name"
             elif loc is not None:
                 m.side_locked = loc
-                rec["side_lock"] = "first_close"
+                rec["side_lock"] = "first_print"
             else:
                 rec["reason"] = "at_rail"
-                rec["c1"] = dict(h=closed.h, l=closed.l, c=closed.c)
-                emit(**rec)
+                if n % 20 == 0:
+                    emit(**rec)
                 time.sleep(0.25)
                 continue
 
@@ -453,34 +426,14 @@ def main():
         rec["inferred"] = rail.kind in BARE
         rec["side_locked"] = bounce
 
-        if loc is None:
-            rec["reason"] = "at_rail"
-            rec["c1"] = dict(h=closed.h, l=closed.l, c=closed.c)
-            emit(**rec)
-            time.sleep(0.25)
-            continue
-        if loc != bounce:
-            rec.update(reason="through_close", snap=m.out("through_close"))
-            emit(**rec)
-            time.sleep(0.25)
-            continue
-
-        hit = (abs(closed.l - rail.px) <= WATCH) if bounce else (abs(closed.h - rail.px) <= WATCH)
-        if not hit:
-            rec["reason"] = "idle_no_hit"
-            rec["c1"] = dict(h=closed.h, l=closed.l, c=closed.c)
-            if n % 20 == 0:
-                emit(**rec)
-            time.sleep(0.25)
-            continue
-
-        hold = (closed.c >= rail.px) if bounce else (closed.c <= rail.px)
-        on_shelf = abs(closed.c - rail.px) <= ARM_PTS
+        tagged = (abs(bar_lo - rail.px) <= WATCH) if bounce else (abs(bar_hi - rail.px) <= WATCH)
+        near = abs(last_px - rail.px) <= WATCH
+        hold = True if loc is None else ((last_px >= rail.px) if bounce else (last_px <= rail.px))
         lean, tmet = dbvol.tape_5m(bounce)
         rec.update(
-            c1=dict(t0=closed.t0, h=closed.h, l=closed.l, c=closed.c),
-            hold=hold, on_shelf=on_shelf, tape_lean=lean, tape=tmet,
-            stop_pts=STOP_PTS, tp_pts=TP_PTS, arm_pts=ARM_PTS,
+            tagged=tagged, near=near, hold=hold, tape_lean=lean, tape=tmet,
+            dist=round(abs(last_px - rail.px), 3),
+            stop_pts=STOP_PTS, tp_pts=TP_PTS, watch=WATCH, t0=t0,
         )
         m.bounce = bounce
         m.picture = "bounce_long" if bounce else "fade_short"
@@ -489,31 +442,56 @@ def main():
         if rail.key in spent:
             rec.update(reason="rail_spent", snap=m.out("rail_spent"),
                        spent_px=spent[rail.key])
-            emit(**rec)
+            if n % 20 == 0:
+                emit(**rec)
             time.sleep(0.25)
             continue
 
-        if not hold:
-            rec.update(reason="body_gave_rail", snap=m.out("body_gave_rail"))
-            emit(**rec)
+        if not tagged:
+            rec["reason"] = "idle_no_hit"
+            if n % 20 == 0:
+                emit(**rec)
             time.sleep(0.25)
             continue
-        if not on_shelf:
-            rec.update(reason="off_shelf", snap=m.out("off_shelf"))
-            emit(**rec)
+        if loc is not None and loc != bounce:
+            rec.update(reason="through", snap=m.out("through"))
+            if n % 10 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
+        if not hold:
+            rec.update(reason="gave_rail", snap=m.out("gave_rail"))
+            if n % 10 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
+        if not near:
+            rec.update(reason="chase", snap=m.out("chase"))
+            if n % 10 == 0:
+                emit(**rec)
             time.sleep(0.25)
             continue
         if not lean:
             rec.update(reason="tape_against", snap=m.out("tape_against"))
-            emit(**rec)
+            if n % 10 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
+
+        if m.tried_t0 == t0:
+            rec["reason"] = "already_tried_this_1m"
+            if n % 20 == 0:
+                emit(**rec)
             time.sleep(0.25)
             continue
 
         ok, sess = session()
+        in_pos = locked()
         rec["event"] = "paper_fire"
         rec["book"] = BOOK
         rec["snap"] = m.out("fire", True)
         rec["reason"] = "fire"
+        m.tried_t0 = t0
         if not FIRE:
             rec["skip"] = "fire_off"
         elif not ok:
