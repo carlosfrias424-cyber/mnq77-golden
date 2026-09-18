@@ -6,6 +6,11 @@ YESTERDAY'S FILE. Three bugfixes only:
   2) spent is per RAIL, not per side (no flip / BRT reclaim)
   3) BE off — do not run manage_be20
 
+Lock (this patch only): 120s after a send, then clear.
+BE off means be20.jsonl is stale — a leftover submit.lock must not
+ghost-lock the rest of the day. place_struct40 still refuses if SIM
+is actually in a position.
+
 Still: fire on the closed 1m that tagged, if hold + tape.
 No volume-not-expanding. No WAIT_C2. No Dual.
 
@@ -109,37 +114,33 @@ def last_net():
 
 
 def locked():
-    net = last_net()
-    if LOCK.exists():
-        try:
-            o = json.loads(LOCK.read_text() or "{}")
-            ts = float(o.get("ts") or LOCK.stat().st_mtime)
-            age = time.time() - ts
-            if age < 120:
-                return True
-            if age > 16 * 3600:
-                try:
-                    LOCK.unlink()
-                except Exception:
-                    pass
-                return False
-        except Exception:
+    """One position. BE off → be20 is stale. Do not 16h-ghost.
+    120s after send = fill in flight. Then drop the lock.
+    place_struct40 still refuses if Tradovate net != 0.
+    """
+    if BE_PTS:
+        net = last_net()
+        if net not in (0, None) and abs(int(net)) > 0:
             return True
-    if net not in (0, None) and abs(int(net)) > 0:
-        return True
-    if net == 0 and LOCK.exists():
+    if not LOCK.exists():
+        return False
+    try:
+        o = json.loads(LOCK.read_text() or "{}")
+        ts = float(o.get("ts") or LOCK.stat().st_mtime)
+        age = time.time() - ts
+    except Exception:
         try:
             LOCK.unlink()
         except Exception:
             pass
         return False
-    if not LOCK.exists():
-        return False
-    try:
-        o = json.loads(LOCK.read_text() or "{}")
-        return bool(o.get("side"))
-    except Exception:
+    if age < 120:
         return True
+    try:
+        LOCK.unlink()
+    except Exception:
+        pass
+    return False
 
 
 def emit(**kw):
@@ -331,7 +332,8 @@ def main():
         return
     emit(event="seven_start", fire=FIRE, book=BOOK, note=NOTE, symbol=SYMBOL,
          session_start="04:00", session_end="11:30", vol_src="databento_trades",
-         dual="UNPLUGGED", opp_reset=OPP_RESET, arm_pts=ARM_PTS, be=BE_PTS)
+         dual="UNPLUGGED", opp_reset=OPP_RESET, arm_pts=ARM_PTS, be=BE_PTS,
+         lock="120s_then_clear")
 
     m = Machine()
     last_poi = 0.0
