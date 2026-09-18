@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Replay today with CORRECT 7/7. Tails last 80MB of decision.jsonl so it does not hang."""
+"""Replay today from seven.jsonl (bars 7/7 actually saw). New rules, no sit-mute.
+Book 5x20/40. Dual not used.
+"""
 from __future__ import annotations
 import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from collections import defaultdict, Counter
+from collections import Counter
 
 CDT = timezone(timedelta(hours=-5))
 ROOT = Path("/home/administrator/.openclaw/workspace/mnq_hybrid/logs")
-WATCH, ARM, SL, TP, QTY = 10.0, 6.0, 20.0, 40.0, 5
-SKIP = ("ONH", "ONL", "EMA", "OPEN")
-SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
-RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
-BARE = {"H4", "H1"}
-TAIL = 80_000_000
+ARM, SL, TP, QTY = 6.0, 20.0, 40.0, 5
+TAIL = 40_000_000
 
 
 def dt_of(o):
@@ -36,18 +34,17 @@ def dt_of(o):
 
 def load_tail(name, t0, t1):
     path = ROOT / name
-    out = []
+    print("open", name, flush=True)
     if not path.exists():
         print("MISSING", name, flush=True)
-        return out
+        return []
     size = path.stat().st_size
-    print("read", name, "bytes", size, flush=True)
     with path.open("rb") as f:
         if size > TAIL:
             f.seek(size - TAIL)
             f.readline()
         raw = f.read().decode("utf-8", "replace")
-    n = 0
+    out = []
     for ln in raw.splitlines():
         if not ln.strip():
             continue
@@ -56,37 +53,10 @@ def load_tail(name, t0, t1):
         except Exception:
             continue
         dt = dt_of(o)
-        if not dt or dt < t0 or dt > t1:
-            continue
-        out.append((dt, o))
-        n += 1
-    print("  kept", n, flush=True)
+        if dt and t0 <= dt <= t1:
+            out.append((dt, o))
+    print("  ", name, "kept", len(out), "file", size, flush=True)
     return out
-
-
-def kind_of(o):
-    u = str(o.get("poi_name") or o.get("type") or "").upper().strip()
-    if not u or any(u.startswith(x) or u == x for x in SKIP):
-        return None
-    if u in SUPPORT or u in RESIST or u in BARE:
-        return u
-    return None
-
-
-def bounce_of(kind, first_over):
-    if kind in SUPPORT:
-        return True
-    if kind in RESIST:
-        return False
-    return first_over
-
-
-def dist_bar(px, lo, hi):
-    if lo <= px <= hi:
-        return 0.0
-    if px > hi:
-        return px - hi
-    return lo - px
 
 
 def path_hit(side, entry, after):
@@ -113,161 +83,124 @@ def main():
     day = datetime.now(CDT).date()
     t0 = datetime(day.year, day.month, day.day, 4, 0, tzinfo=CDT)
     t1 = datetime.now(CDT)
-    print("window", t0.strftime("%H:%M"), "->", t1.strftime("%H:%M %Z"), flush=True)
+    print("window", t0.strftime("%H:%M"), "->", t1.strftime("%H:%M"), flush=True)
 
+    seven = load_tail("seven.jsonl", t0, t1)
     dec = load_tail("decision.jsonl", t0, t1)
     ticks = []
     for dt, o in dec:
-        mid = o.get("mid")
-        if mid is None:
+        m = o.get("mid")
+        if m is None:
             continue
         try:
-            mid = float(mid)
+            ticks.append((dt, float(m)))
         except Exception:
-            continue
-        d5 = o.get("delta_5s")
-        try:
-            d5 = float(d5) if d5 is not None else None
-        except Exception:
-            d5 = None
-        ticks.append((dt, mid, d5, bool(o.get("d_long")), bool(o.get("d_short"))))
+            pass
     ticks.sort()
     print("ticks", len(ticks), flush=True)
-    if len(ticks) < 30:
-        print("not enough ticks in tail — need a bigger TAIL", flush=True)
-        return
 
-    pois = []
-    for dt, o in load_tail("tv_poi.jsonl", t0 - timedelta(hours=6), t1):
-        k = kind_of(o)
-        if k is None:
+    # one row per closed 1m (c1.t0) that 7/7 actually scored
+    by_bar = {}
+    for dt, o in seven:
+        c1 = o.get("c1") or {}
+        tbar = c1.get("t0")
+        if tbar is None:
             continue
-        try:
-            px = round(float(o.get("price") or 0), 2)
-        except Exception:
+        poi = o.get("poi")
+        if not poi:
             continue
-        if px <= 0:
-            continue
-        pois.append((dt, k, px))
-    pois.sort()
-    print("poi", len(pois), flush=True)
+        by_bar[tbar] = (dt, o)
+    bars = [by_bar[k] for k in sorted(by_bar)]
+    print("scored 1m with c1", len(bars), flush=True)
 
-    bars = defaultdict(lambda: dict(o=None, h=None, l=None, c=None, d5=None, dl=0, ds=0))
-    for dt, mid, d5, dl, ds in ticks:
-        t0b = dt.replace(second=0, microsecond=0)
-        b = bars[t0b]
-        if b["o"] is None:
-            b["o"] = mid
-        b["h"] = mid if b["h"] is None else max(b["h"], mid)
-        b["l"] = mid if b["l"] is None else min(b["l"], mid)
-        b["c"] = mid
-        if d5 is not None:
-            b["d5"] = d5
-        b["dl"] += int(dl)
-        b["ds"] += int(ds)
-    times = sorted(bars)
-    print("1m bars", len(times), flush=True)
-
-    def last_poi(dt):
-        best = None
-        for p in pois:
-            if p[0] <= dt:
-                best = p
-            else:
-                break
-        return best
-
-    side_lock = None
     spent = {}
     in_until = None
     trades = []
     skips = []
+    seen_lock = set()
 
-    for t0b in times:
-        b = bars[t0b]
-        closed_at = t0b + timedelta(minutes=1)
-        if in_until and closed_at < in_until:
+    for dt, o in bars:
+        c1 = o.get("c1") or {}
+        try:
+            c = float(c1.get("c"))
+            px = float(o.get("px") or str(o.get("poi")).split("@")[-1])
+        except Exception:
             continue
-        if in_until and closed_at >= in_until:
+        poi = o.get("poi")
+        if in_until and dt < in_until:
+            continue
+        if in_until and dt >= in_until:
             in_until = None
-        lp = last_poi(closed_at)
-        if lp is None:
-            continue
-        _, kind, px = lp
-        key = "%s@%.2f" % (kind, px)
-        lo, hi, c, o = b["l"], b["h"], b["c"], b["o"]
         for k, spx in list(spent.items()):
             if abs(c - spx) >= 20:
                 spent.pop(k, None)
-        if dist_bar(px, lo, hi) > WATCH:
-            if side_lock and side_lock[0] == key:
-                side_lock = None
-            continue
-        loc = True if c > px else (False if c < px else (True if o > px else (False if o < px else None)))
-        if loc is None:
-            continue
-        if side_lock is None or side_lock[0] != key:
-            side_lock = (key, bounce_of(kind, loc))
-        bounce = side_lock[1]
-        if loc != bounce:
-            skips.append((closed_at, key, "through_close", c))
-            continue
-        tagged = (abs(lo - px) <= WATCH) if bounce else (abs(hi - px) <= WATCH)
-        if not tagged:
-            continue
-        hold = (c >= px) if bounce else (c <= px)
-        shelf = abs(c - px) <= ARM
-        d5 = b["d5"]
-        if bounce:
-            lean = (d5 is not None and d5 > 0) or (b["dl"] > b["ds"])
-        else:
-            lean = (d5 is not None and d5 < 0) or (b["ds"] > b["dl"])
-        if not hold:
-            skips.append((closed_at, key, "body_gave_rail", c))
-            continue
-        if not shelf:
-            skips.append((closed_at, key, "off_shelf", c))
-            continue
-        if not lean:
-            skips.append((closed_at, key, "tape_against", c))
-            continue
-        if key in spent:
-            skips.append((closed_at, key, "rail_spent", c))
-            continue
-        side = "Buy" if bounce else "Sell"
-        after = [(dt, mid) for dt, mid, *_ in ticks if dt >= closed_at]
-        hit, hit_t, mae, mfe = path_hit(side, float(c), after)
-        pts = TP if hit == "TP40" else (-SL if hit == "SL20" else 0.0)
-        trades.append(dict(t=closed_at, side=side, entry=float(c), poi=key,
-                           hit=hit, hit_t=hit_t, mae=mae, mfe=mfe, pts=pts, d5=d5))
-        spent[key] = px
-        in_until = hit_t
 
-    print("\n=== CORRECT 7/7 replay ===", flush=True)
+        hold = o.get("hold")
+        shelf = o.get("on_shelf")
+        if shelf is None:
+            shelf = abs(c - px) <= ARM
+        lean = o.get("tape_lean")
+        bounce = o.get("side_locked")
+        if bounce is None:
+            bounce = o.get("sr") == "support" or o.get("tag") == "low"
+        side = "Buy" if bounce else "Sell"
+        if o.get("side") in ("Buy", "Sell"):
+            side = o["side"]
+
+        why = None
+        if o.get("reason") == "through_close" or (hold is False and o.get("reason") == "through_close"):
+            why = "through_close"
+        elif hold is False:
+            why = "body_gave_rail"
+        elif shelf is False:
+            why = "off_shelf"
+        elif lean is False:
+            why = "tape_against"
+        elif hold is not True or lean is not True or shelf is not True:
+            why = "not_complete"
+        elif poi in spent:
+            why = "rail_spent"
+        if why:
+            skips.append((dt, poi, why, c))
+            continue
+
+        entry = c
+        after = [(x, m) for x, m in ticks if x >= dt]
+        hit, hit_t, mae, mfe = path_hit(side, entry, after)
+        pts = TP if hit == "TP40" else (-SL if hit == "SL20" else 0.0)
+        trades.append(dict(t=dt, side=side, entry=entry, poi=poi, hit=hit,
+                           hit_t=hit_t, mae=mae, mfe=mfe, pts=pts,
+                           hold=hold, shelf=shelf, lean=lean, skip_live=o.get("skip")))
+        spent[poi] = px
+        in_until = hit_t
+        seen_lock.add(o.get("skip"))
+
+    print("\n=== CORRECT 7/7 (from live 1m scores, sit-mute OFF) ===", flush=True)
     pnl = 0.0
     for tr in trades:
         dol = tr["pts"] * 2 * QTY
         pnl += dol
         ht = tr["hit_t"].strftime("%H:%M:%S") if tr["hit_t"] else "open"
-        print("%s %s %.2f %s hit=%s %s MAE=%.1f MFE=%.1f pts=%+.0f $%+.0f d5=%s" % (
-            tr["t"].strftime("%H:%M"), tr["side"], tr["entry"], tr["poi"],
-            tr["hit"], ht, tr["mae"], tr["mfe"], tr["pts"], dol, tr["d5"]), flush=True)
+        print("%s %s %.2f %s hit=%s %s MAE=%.1f MFE=%.1f pts=%+.0f $%+.0f live_skip=%s" % (
+            tr["t"].strftime("%H:%M:%S"), tr["side"], tr["entry"], tr["poi"],
+            tr["hit"], ht, tr["mae"], tr["mfe"], tr["pts"], dol, tr["skip_live"]), flush=True)
     print("trades", len(trades), "$pnl", round(pnl), "(5 MNQ x $2/pt)", flush=True)
-    wr = sum(1 for t in trades if t["hit"] == "TP40")
-    ls = sum(1 for t in trades if t["hit"] == "SL20")
-    print("TP", wr, "SL", ls, "open", len(trades) - wr - ls, flush=True)
+    print("TP", sum(1 for t in trades if t["hit"] == "TP40"),
+          "SL", sum(1 for t in trades if t["hit"] == "SL20"),
+          "open", sum(1 for t in trades if t["hit"] == "OPEN"), flush=True)
+
     print("\n=== skip counts ===", dict(Counter(w for _, _, w, _ in skips)), flush=True)
     shown = Counter()
-    for t, k, w, px in skips:
-        if shown[w] >= 8:
+    for t, k, w, c in skips:
+        if shown[w] >= 6:
             continue
         shown[w] += 1
-        print("  %s %-16s %s c=%.2f" % (t.strftime("%H:%M"), w, k, px), flush=True)
+        print("  %s %-16s %s c=%.2f" % (t.strftime("%H:%M:%S"), w, k, c), flush=True)
 
-    print("\n=== box actually did ===", flush=True)
-    for dt, o in load_tail("seven.jsonl", t0, t1):
+    print("\n=== box live go/skip (including muted sits) ===", flush=True)
+    for dt, o in seven:
         ev = o.get("event")
-        if ev in ("paper_fire", "struct40_submit", "struct40_fail") or o.get("submit"):
+        if ev in ("paper_fire", "struct40_submit", "struct40_fail") or o.get("submit") or o.get("reason") == "fire":
             print("%s %s skip=%s poi=%s mid=%s hold=%s shelf=%s lean=%s" % (
                 dt.strftime("%H:%M:%S"), ev, o.get("skip"), o.get("poi"),
                 o.get("mid"), o.get("hold"), o.get("on_shelf"), o.get("tape_lean")), flush=True)
