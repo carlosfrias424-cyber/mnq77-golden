@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Replay today's session with CORRECT 7/7 (last webhook, shelf 6, no sit-mute).
-Uses decision.jsonl ticks + tv_poi.jsonl last webhook. Dual not used.
+decision.jsonl ticks + tv_poi.jsonl. Dual not used.
 Book: 5 MNQ, SL 20, TP 40, BE off, one position.
 """
 from __future__ import annotations
 import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 CDT = timezone(timedelta(hours=-5))
 ROOT = Path("/home/administrator/.openclaw/workspace/mnq_hybrid/logs")
@@ -16,7 +16,7 @@ SKIP = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-$
+
 
 def dt_of(o):
     t = o.get("ts") or o.get("recv_ts")
@@ -72,17 +72,44 @@ def bounce_of(kind, first_over):
     return first_over
 
 
+def dist_bar(px, lo, hi):
+    if lo <= px <= hi:
+        return 0.0
+    if px > hi:
+        return px - hi
+    return lo - px
+
+
+def path_hit(side, entry, after):
+    mae = mfe = 0.0
+    hit, hit_t = "OPEN", None
+    for dt, mid, *_ in after:
+        if side == "Buy":
+            mae = max(mae, entry - mid)
+            mfe = max(mfe, mid - entry)
+            if mid <= entry - SL:
+                return "SL20", dt, mae, mfe
+            if mid >= entry + TP:
+                return "TP40", dt, mae, mfe
+        else:
+            mae = max(mae, mid - entry)
+            mfe = max(mfe, entry - mid)
+            if mid >= entry + SL:
+                return "SL20", dt, mae, mfe
+            if mid <= entry - TP:
+                return "TP40", dt, mae, mfe
+    return hit, hit_t, mae, mfe
+
+
 def main():
     day = datetime.now(CDT).date()
     t0 = datetime(day.year, day.month, day.day, 4, 0, tzinfo=CDT)
-    t1 = datetime(day.year, day.month, day.day, 11, 30, tzinfo=CDT)
-    print("window", t0, "→", t1)
+    t1 = datetime.now(CDT)
+    print("window", t0.strftime("%H:%M"), "->", t1.strftime("%H:%M %Z"))
 
     ticks = []
     for dt, o in load("decision.jsonl"):
         if dt < t0 or dt > t1:
-            continue
-        if o.get("event") not in (None, "decision", "tick") and o.get("mid") is None:
             continue
         mid = o.get("mid")
         if mid is None:
@@ -100,7 +127,7 @@ def main():
     ticks.sort()
     print("ticks", len(ticks))
     if len(ticks) < 50:
-        print("not enough decision ticks — abort")
+        print("not enough decision ticks")
         return
 
     pois = []
@@ -144,77 +171,48 @@ def main():
                 break
         return best
 
-    side_lock = None  # (rail_key, bounce)
+    side_lock = None
     spent = {}
-    pos = None  # dict
+    in_trade_until = None
     trades = []
     skips = []
 
-    def mfe_mae(side, entry, after):
-        mae = mfe = 0.0
-        hit = "OPEN"
-        hit_t = None
-        for dt, mid, *_ in after:
-            if side == "Buy":
-                mae = max(mae, entry - mid)
-                mfe = max(mfe, mid - entry)
-                if mid <= entry - SL:
-                    hit, hit_t = "SL20", dt
-                    break
-                if mid >= entry + TP:
-                    hit, hit_t = "TP40", dt
-                    break
-            else:
-                mae = max(mae, mid - entry)
-                mfe = max(mfe, entry - mid)
-                if mid >= entry + SL:
-                    hit, hit_t = "SL20", dt
-                    break
-                if mid <= entry - TP:
-                    hit, hit_t = "TP40", dt
-                    break
-        return hit, hit_t, mae, mfe
-
-    for i, t0b in enumerate(times[:-1]):
+    for t0b in times:
         b = bars[t0b]
         closed_at = t0b + timedelta(minutes=1)
+        if in_trade_until and closed_at < in_trade_until:
+            continue
+        if in_trade_until and closed_at >= in_trade_until:
+            in_trade_until = None
+
         lp = last_poi(closed_at)
         if lp is None:
             continue
         _, kind, px = lp
         key = f"{kind}@{px:.2f}"
+        lo, hi, c, o = b["l"], b["h"], b["c"], b["o"]
 
-        # expire spent
-        dead = [k for k, spx in spent.items() if abs(b["c"] - spx) >= 20]
+        dead = [k for k, spx in list(spent.items()) if abs(c - spx) >= 20]
         for k in dead:
             spent.pop(k, None)
 
-        if pos is not None:
-            continue  # one position; resolved below via path
-
-        lo, hi, c, o = b["l"], b["h"], b["c"], b["o"]
-        if min(abs(lo - px), abs(hi - px), 0 if lo <= px <= hi else 99) > WATCH and not (lo <= px <= hi):
+        dbar = dist_bar(px, lo, hi)
+        if dbar > WATCH:
             if side_lock and side_lock[0] == key:
-                pass
-            # leave watch → unlock that rail
-            dist = 0.0 if lo <= px <= hi else (px - hi if px > hi else lo - px)
-            if dist > WATCH:
-                if side_lock and side_lock[0] == key:
-                    side_lock = None
-                continue
+                side_lock = None
+            continue
 
         loc = True if c > px else (False if c < px else (True if o > px else (False if o < px else None)))
         if loc is None:
             continue
-
         if side_lock is None or side_lock[0] != key:
             side_lock = (key, bounce_of(kind, loc))
         bounce = side_lock[1]
         if loc != bounce:
             skips.append((closed_at, key, "through_close", c))
             continue
-        hit = (abs(lo - px) <= WATCH) if bounce else (abs(hi - px) <= WATCH)
-        if not hit:
+        tagged = (abs(lo - px) <= WATCH) if bounce else (abs(hi - px) <= WATCH)
+        if not tagged:
             continue
         hold = (c >= px) if bounce else (c <= px)
         shelf = abs(c - px) <= ARM
@@ -223,73 +221,67 @@ def main():
             lean = (d5 is not None and d5 > 0) or (b["dl"] > b["ds"])
         else:
             lean = (d5 is not None and d5 < 0) or (b["ds"] > b["dl"])
-        why = None
         if not hold:
-            why = "body_gave_rail"
-        elif not shelf:
-            why = "off_shelf"
-        elif not lean:
-            why = "tape_against"
-        if why:
-            skips.append((closed_at, key, why, c))
+            skips.append((closed_at, key, "body_gave_rail", c))
+            continue
+        if not shelf:
+            skips.append((closed_at, key, "off_shelf", c))
+            continue
+        if not lean:
+            skips.append((closed_at, key, "tape_against", c))
             continue
         if key in spent:
             skips.append((closed_at, key, "rail_spent", c))
             continue
 
         side = "Buy" if bounce else "Sell"
-        entry = c
-        after = [(dt, mid, d5, dl, ds) for dt, mid, d5, dl, ds in ticks if dt >= closed_at]
-        hit, hit_t, mae, mfe = mfe_mae(side, entry, after)
+        entry = float(c)
+        after = [(dt, mid) for dt, mid, *_ in ticks if dt >= closed_at]
+        hit, hit_t, mae, mfe = path_hit(side, entry, after)
         pts = TP if hit == "TP40" else (-SL if hit == "SL20" else 0.0)
-        trades.append(dict(
-            t=closed_at, side=side, entry=entry, poi=key, hit=hit,
-            hit_t=hit_t, mae=mae, mfe=mfe, pts=pts,
-            hold=hold, shelf=shelf, lean=lean, c=c, h=hi, l=lo, d5=d5,
-        ))
+        trades.append({
+            "t": closed_at, "side": side, "entry": entry, "poi": key,
+            "hit": hit, "hit_t": hit_t, "mae": mae, "mfe": mfe, "pts": pts,
+            "d5": d5, "c": c, "h": hi, "l": lo,
+        })
         spent[key] = px
-        pos = trades[-1]
-        # flatten pos when hit so next can fire
-        if hit in ("TP40", "SL20"):
-            pos = None
+        in_trade_until = hit_t
 
-    print("\n=== CORRECT 7/7 fires (replay) ===")
+    print("\n=== CORRECT 7/7 replay ===")
     pnl = 0.0
     for tr in trades:
         dol = tr["pts"] * 2 * QTY
         pnl += dol
-        ht = tr["hit_t"].strftime("%H:%M:%S") if tr["hit_t"] else ""
+        ht = tr["hit_t"].strftime("%H:%M:%S") if tr["hit_t"] else "open"
         print(
-            f"{tr['t']:%H:%M} {tr['side']:4} {tr['entry']:.2f} {tr['poi']} "
-            f"hit={tr['hit']:5} {ht} MAE={tr['mae']:.1f} MFE={tr['mfe']:.1f} "
-            f"pts={tr['pts']:+.0f} $"{dol:+.0f} d5={tr['d5']}"
+            "%s %s %.2f %s hit=%s %s MAE=%.1f MFE=%.1f pts=%+.0f $%+.0f d5=%s"
+            % (tr["t"].strftime("%H:%M"), tr["side"], tr["entry"], tr["poi"],
+               tr["hit"], ht, tr["mae"], tr["mfe"], tr["pts"], dol, tr["d5"])
         )
-    print(f"trades {len(trades)}  $ pnl {pnl:+.0f}  (5 MNQ, $2/pt)")
+    print("trades", len(trades), "$", round(pnl), "(5 MNQ x $2/pt)")
     wr = sum(1 for t in trades if t["hit"] == "TP40")
     ls = sum(1 for t in trades if t["hit"] == "SL20")
-    print(f"TP {wr}  SL {ls}  open {len(trades)-wr-ls}")
+    print("TP", wr, "SL", ls, "open", len(trades) - wr - ls)
 
-    print("\n=== skips (first 20 of each why) ===")
-    from collections import Counter
-    c = Counter(w for _, _, w, _ in skips)
-    print(dict(c))
+    print("\n=== skip counts ===")
+    print(dict(Counter(w for _, _, w, _ in skips)))
     shown = Counter()
     for t, k, w, px in skips:
         if shown[w] >= 8:
             continue
         shown[w] += 1
-        print(f"  {t:%H:%M} {w:16} {k} c={px:.2f}")
+        print("  %s %-16s %s c=%.2f" % (t.strftime("%H:%M"), w, k, px))
 
-    print("\n=== actual box fires today ===")
+    print("\n=== what the box actually did ===")
     for dt, o in load("seven.jsonl"):
         if dt < t0 or dt > t1:
             continue
         ev = o.get("event")
         if ev in ("paper_fire", "struct40_submit", "struct40_fail") or o.get("submit"):
             print(
-                f"{dt:%H:%M:%S} {ev} skip={o.get('skip')} side={o.get('side')} "
-                f"poi={o.get('poi')} mid={o.get('mid')} hold={o.get('hold')} "
-                f"shelf={o.get('on_shelf')} lean={o.get('tape_lean')}"
+                "%s %s skip=%s poi=%s mid=%s hold=%s shelf=%s lean=%s"
+                % (dt.strftime("%H:%M:%S"), ev, o.get("skip"), o.get("poi"),
+                   o.get("mid"), o.get("hold"), o.get("on_shelf"), o.get("tape_lean"))
             )
 
 
