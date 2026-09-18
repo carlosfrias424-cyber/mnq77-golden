@@ -6,10 +6,9 @@ YESTERDAY'S FILE. Three bugfixes only:
   2) spent is per RAIL, not per side (no flip / BRT reclaim)
   3) BE off — do not run manage_be20
 
-Lock (this patch only): 120s after a send, then clear.
-BE off means be20.jsonl is stale — a leftover submit.lock must not
-ghost-lock the rest of the day. place_struct40 still refuses if SIM
-is actually in a position.
+THIS PATCH: a failed 1m does NOT mute the sit. Skip does NOT spend the rail.
+Next closed 1m on the same rail can still fire. Spent only after a real send.
+Lock: 120s after a send, then clear.
 
 Still: fire on the closed 1m that tagged, if hold + tape.
 No volume-not-expanding. No WAIT_C2. No Dual.
@@ -18,12 +17,11 @@ Pine name is the side:
   H4L H1L PDL PWL → bounce long (price must hold OVER)
   H4H H1H PDH PWH → fade short  (price must hold UNDER)
   H4 / H1 (old pine) → LOCK from first 1m close of the visit
-  Later 1m CLOSE on the other side = through → skip until leave 10 pts
   OPEN / ONH / ONL / EMA → not rails
 
 Book: 5 MNQ DEMO, stop 20, TP 40, BE off. Session 04:00–11:30 CT M–F.
 Rail = last webhook. Symbol MNQZ6.
-Spent: that rail is dead until price is 20 pts away from it.
+Spent: that rail is dead until price is 20 pts away — AFTER a send only.
 """
 from __future__ import annotations
 
@@ -54,7 +52,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "yesterday_shelf6_sticky_be_off"
+NOTE = "yesterday_shelf6_rescore"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -341,7 +339,7 @@ def main():
     last_hb = 0.0
     rails: list[Rail] = []
     n = 0
-    spent = {}  # rail.key -> rail.px  (BOTH sides)
+    spent = {}  # rail.key -> rail.px  AFTER a real send only
     spent_day = datetime.now(TZ).date()
 
     while True:
@@ -421,13 +419,6 @@ def main():
                 emit(**rec)
             time.sleep(0.25)
             continue
-        if m.visit_dead:
-            if n % 20 == 0:
-                rec.update(reason="visit_dead", side_locked=m.side_locked,
-                           snap=m.out("visit_dead"))
-                emit(**rec)
-            time.sleep(0.25)
-            continue
 
         if not new_1m or closed is None:
             rec["reason"] = "idle_wait_1m"
@@ -469,9 +460,7 @@ def main():
             time.sleep(0.25)
             continue
         if loc != bounce:
-            m.visit_dead = True
-            rec.update(reason="through_close", snap=m.out("through_close"),
-                       visit_dead=True)
+            rec.update(reason="through_close", snap=m.out("through_close"))
             emit(**rec)
             time.sleep(0.25)
             continue
@@ -505,14 +494,12 @@ def main():
             continue
 
         if not hold:
-            m.visit_dead = True
-            rec.update(reason="body_gave_rail", snap=m.out("body_gave_rail"), visit_dead=True)
+            rec.update(reason="body_gave_rail", snap=m.out("body_gave_rail"))
             emit(**rec)
             time.sleep(0.25)
             continue
         if not on_shelf:
-            m.visit_dead = True
-            rec.update(reason="off_shelf", snap=m.out("off_shelf"), visit_dead=True)
+            rec.update(reason="off_shelf", snap=m.out("off_shelf"))
             emit(**rec)
             time.sleep(0.25)
             continue
@@ -543,11 +530,8 @@ def main():
             if rc == 0:
                 m.spent_fill = True
                 m.phase = "FILLED"
-        spent[rail.key] = rail.px
-        rec["rail_spent"] = True
-        if rec.get("skip"):
-            m.spent_fill = True
-            m.visit_dead = True
+                spent[rail.key] = rail.px
+                rec["rail_spent"] = True
         emit(**rec)
         time.sleep(0.25)
 
