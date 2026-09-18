@@ -114,7 +114,7 @@ def locked():
     if not LOCK.exists():
         return False
     try:
-        o = json.dumps if False else json.loads(LOCK.read_text() or "{}")
+        o = json.loads(LOCK.read_text() or "{}")
         ts = float(o.get("ts") or LOCK.stat().st_mtime)
         age = time.time() - ts
     except Exception:
