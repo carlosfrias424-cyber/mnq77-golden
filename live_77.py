@@ -5,10 +5,10 @@ Fire LIVE (not on 1m close):
   1) this 1m wick tags the last-webhook rail (within 10)
   2) last print holds the SIDE (bounce over / fade under)
   3) tape leans with the trade
-  4) last print STILL within 10 of the rail  ← no chase
+  4) last print STILL within 15 of the rail  ← no chase
 Strip: 6-pt close cage. No WAIT_C2. No volume gate.
 
-If the reaction already ran >10 off the rail → skip (chase).
+If the reaction already ran >15 off the rail → skip (chase).
 One attempt per forming 1m. Spent only after a real send.
 Lock: 120s after send, then clear. place_struct40 still blocks net!=0.
 
@@ -39,7 +39,7 @@ SUBMIT = ROOT / "apps/tradovate/place_struct40.py"
 sys.path.insert(0, str(ROOT / "apps" / "watcher7"))
 
 FIRE = True
-TICK, WATCH = 0.25, 10.0
+TICK, WATCH, FIRE_NEAR = 0.25, 10.0, 15.0
 STOP_PTS, TP_PTS, BE_PTS, QTY = 20.0, 40.0, 0.0, 5
 OPP_RESET = 20.0
 SESSION_START, SESSION_END = 4 * 60, 11 * 60 + 30
@@ -49,7 +49,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "sniper_live_tag10"
+NOTE = "sniper_live_15"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -318,8 +318,8 @@ def main():
         return
     emit(event="seven_start", fire=FIRE, book=BOOK, note=NOTE, symbol=SYMBOL,
          session_start="04:00", session_end="11:30", vol_src="databento_trades",
-         dual="UNPLUGGED", opp_reset=OPP_RESET, watch=WATCH, be=BE_PTS,
-         lock="120s_then_clear", fire_mode="sniper_live")
+         dual="UNPLUGGED", opp_reset=OPP_RESET, watch=WATCH, fire_near=FIRE_NEAR,
+         be=BE_PTS, lock="120s_then_clear", fire_mode="sniper_live")
 
     m = Machine()
     last_poi = 0.0
@@ -427,13 +427,13 @@ def main():
         rec["side_locked"] = bounce
 
         tagged = (abs(bar_lo - rail.px) <= WATCH) if bounce else (abs(bar_hi - rail.px) <= WATCH)
-        near = abs(last_px - rail.px) <= WATCH
+        near = abs(last_px - rail.px) <= FIRE_NEAR
         hold = True if loc is None else ((last_px >= rail.px) if bounce else (last_px <= rail.px))
         lean, tmet = dbvol.tape_5m(bounce)
         rec.update(
             tagged=tagged, near=near, hold=hold, tape_lean=lean, tape=tmet,
             dist=round(abs(last_px - rail.px), 3),
-            stop_pts=STOP_PTS, tp_pts=TP_PTS, watch=WATCH, t0=t0,
+            stop_pts=STOP_PTS, tp_pts=TP_PTS, watch=WATCH, fire_near=FIRE_NEAR, t0=t0,
         )
         m.bounce = bounce
         m.picture = "bounce_long" if bounce else "fade_short"
