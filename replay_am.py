@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Replay today's session with CORRECT 7/7 (last webhook, shelf 6, no sit-mute).
-decision.jsonl ticks + tv_poi.jsonl. Dual not used.
-Book: 5 MNQ, SL 20, TP 40, BE off, one position.
-"""
+"""Replay today with CORRECT 7/7. Tails last 80MB of decision.jsonl so it does not hang."""
 from __future__ import annotations
 import json
 from datetime import datetime, timezone, timedelta
@@ -16,6 +13,7 @@ SKIP = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
+TAIL = 80_000_000
 
 
 def dt_of(o):
@@ -36,13 +34,21 @@ def dt_of(o):
     return datetime.fromtimestamp(t / 1000, tz=timezone.utc).astimezone(CDT)
 
 
-def load(p):
+def load_tail(name, t0, t1):
+    path = ROOT / name
     out = []
-    path = ROOT / p
     if not path.exists():
-        print("MISSING", p)
+        print("MISSING", name, flush=True)
         return out
-    for ln in path.open():
+    size = path.stat().st_size
+    print("read", name, "bytes", size, flush=True)
+    with path.open("rb") as f:
+        if size > TAIL:
+            f.seek(size - TAIL)
+            f.readline()
+        raw = f.read().decode("utf-8", "replace")
+    n = 0
+    for ln in raw.splitlines():
         if not ln.strip():
             continue
         try:
@@ -50,8 +56,11 @@ def load(p):
         except Exception:
             continue
         dt = dt_of(o)
-        if dt:
-            out.append((dt, o))
+        if not dt or dt < t0 or dt > t1:
+            continue
+        out.append((dt, o))
+        n += 1
+    print("  kept", n, flush=True)
     return out
 
 
@@ -82,8 +91,7 @@ def dist_bar(px, lo, hi):
 
 def path_hit(side, entry, after):
     mae = mfe = 0.0
-    hit, hit_t = "OPEN", None
-    for dt, mid, *_ in after:
+    for dt, mid in after:
         if side == "Buy":
             mae = max(mae, entry - mid)
             mfe = max(mfe, mid - entry)
@@ -98,19 +106,18 @@ def path_hit(side, entry, after):
                 return "SL20", dt, mae, mfe
             if mid <= entry - TP:
                 return "TP40", dt, mae, mfe
-    return hit, hit_t, mae, mfe
+    return "OPEN", None, mae, mfe
 
 
 def main():
     day = datetime.now(CDT).date()
     t0 = datetime(day.year, day.month, day.day, 4, 0, tzinfo=CDT)
     t1 = datetime.now(CDT)
-    print("window", t0.strftime("%H:%M"), "->", t1.strftime("%H:%M %Z"))
+    print("window", t0.strftime("%H:%M"), "->", t1.strftime("%H:%M %Z"), flush=True)
 
+    dec = load_tail("decision.jsonl", t0, t1)
     ticks = []
-    for dt, o in load("decision.jsonl"):
-        if dt < t0 or dt > t1:
-            continue
+    for dt, o in dec:
         mid = o.get("mid")
         if mid is None:
             continue
@@ -125,13 +132,13 @@ def main():
             d5 = None
         ticks.append((dt, mid, d5, bool(o.get("d_long")), bool(o.get("d_short"))))
     ticks.sort()
-    print("ticks", len(ticks))
-    if len(ticks) < 50:
-        print("not enough decision ticks")
+    print("ticks", len(ticks), flush=True)
+    if len(ticks) < 30:
+        print("not enough ticks in tail — need a bigger TAIL", flush=True)
         return
 
     pois = []
-    for dt, o in load("tv_poi.jsonl"):
+    for dt, o in load_tail("tv_poi.jsonl", t0 - timedelta(hours=6), t1):
         k = kind_of(o)
         if k is None:
             continue
@@ -143,9 +150,9 @@ def main():
             continue
         pois.append((dt, k, px))
     pois.sort()
-    print("poi alerts", len(pois))
+    print("poi", len(pois), flush=True)
 
-    bars = defaultdict(lambda: dict(o=None, h=None, l=None, c=None, d5=None, dl=0, ds=0, n=0))
+    bars = defaultdict(lambda: dict(o=None, h=None, l=None, c=None, d5=None, dl=0, ds=0))
     for dt, mid, d5, dl, ds in ticks:
         t0b = dt.replace(second=0, microsecond=0)
         b = bars[t0b]
@@ -158,9 +165,8 @@ def main():
             b["d5"] = d5
         b["dl"] += int(dl)
         b["ds"] += int(ds)
-        b["n"] += 1
     times = sorted(bars)
-    print("1m bars", len(times))
+    print("1m bars", len(times), flush=True)
 
     def last_poi(dt):
         best = None
@@ -173,35 +179,30 @@ def main():
 
     side_lock = None
     spent = {}
-    in_trade_until = None
+    in_until = None
     trades = []
     skips = []
 
     for t0b in times:
         b = bars[t0b]
         closed_at = t0b + timedelta(minutes=1)
-        if in_trade_until and closed_at < in_trade_until:
+        if in_until and closed_at < in_until:
             continue
-        if in_trade_until and closed_at >= in_trade_until:
-            in_trade_until = None
-
+        if in_until and closed_at >= in_until:
+            in_until = None
         lp = last_poi(closed_at)
         if lp is None:
             continue
         _, kind, px = lp
-        key = f"{kind}@{px:.2f}"
+        key = "%s@%.2f" % (kind, px)
         lo, hi, c, o = b["l"], b["h"], b["c"], b["o"]
-
-        dead = [k for k, spx in list(spent.items()) if abs(c - spx) >= 20]
-        for k in dead:
-            spent.pop(k, None)
-
-        dbar = dist_bar(px, lo, hi)
-        if dbar > WATCH:
+        for k, spx in list(spent.items()):
+            if abs(c - spx) >= 20:
+                spent.pop(k, None)
+        if dist_bar(px, lo, hi) > WATCH:
             if side_lock and side_lock[0] == key:
                 side_lock = None
             continue
-
         loc = True if c > px else (False if c < px else (True if o > px else (False if o < px else None)))
         if loc is None:
             continue
@@ -233,56 +234,43 @@ def main():
         if key in spent:
             skips.append((closed_at, key, "rail_spent", c))
             continue
-
         side = "Buy" if bounce else "Sell"
-        entry = float(c)
         after = [(dt, mid) for dt, mid, *_ in ticks if dt >= closed_at]
-        hit, hit_t, mae, mfe = path_hit(side, entry, after)
+        hit, hit_t, mae, mfe = path_hit(side, float(c), after)
         pts = TP if hit == "TP40" else (-SL if hit == "SL20" else 0.0)
-        trades.append({
-            "t": closed_at, "side": side, "entry": entry, "poi": key,
-            "hit": hit, "hit_t": hit_t, "mae": mae, "mfe": mfe, "pts": pts,
-            "d5": d5, "c": c, "h": hi, "l": lo,
-        })
+        trades.append(dict(t=closed_at, side=side, entry=float(c), poi=key,
+                           hit=hit, hit_t=hit_t, mae=mae, mfe=mfe, pts=pts, d5=d5))
         spent[key] = px
-        in_trade_until = hit_t
+        in_until = hit_t
 
-    print("\n=== CORRECT 7/7 replay ===")
+    print("\n=== CORRECT 7/7 replay ===", flush=True)
     pnl = 0.0
     for tr in trades:
         dol = tr["pts"] * 2 * QTY
         pnl += dol
         ht = tr["hit_t"].strftime("%H:%M:%S") if tr["hit_t"] else "open"
-        print(
-            "%s %s %.2f %s hit=%s %s MAE=%.1f MFE=%.1f pts=%+.0f $%+.0f d5=%s"
-            % (tr["t"].strftime("%H:%M"), tr["side"], tr["entry"], tr["poi"],
-               tr["hit"], ht, tr["mae"], tr["mfe"], tr["pts"], dol, tr["d5"])
-        )
-    print("trades", len(trades), "$", round(pnl), "(5 MNQ x $2/pt)")
+        print("%s %s %.2f %s hit=%s %s MAE=%.1f MFE=%.1f pts=%+.0f $%+.0f d5=%s" % (
+            tr["t"].strftime("%H:%M"), tr["side"], tr["entry"], tr["poi"],
+            tr["hit"], ht, tr["mae"], tr["mfe"], tr["pts"], dol, tr["d5"]), flush=True)
+    print("trades", len(trades), "$pnl", round(pnl), "(5 MNQ x $2/pt)", flush=True)
     wr = sum(1 for t in trades if t["hit"] == "TP40")
     ls = sum(1 for t in trades if t["hit"] == "SL20")
-    print("TP", wr, "SL", ls, "open", len(trades) - wr - ls)
-
-    print("\n=== skip counts ===")
-    print(dict(Counter(w for _, _, w, _ in skips)))
+    print("TP", wr, "SL", ls, "open", len(trades) - wr - ls, flush=True)
+    print("\n=== skip counts ===", dict(Counter(w for _, _, w, _ in skips)), flush=True)
     shown = Counter()
     for t, k, w, px in skips:
         if shown[w] >= 8:
             continue
         shown[w] += 1
-        print("  %s %-16s %s c=%.2f" % (t.strftime("%H:%M"), w, k, px))
+        print("  %s %-16s %s c=%.2f" % (t.strftime("%H:%M"), w, k, px), flush=True)
 
-    print("\n=== what the box actually did ===")
-    for dt, o in load("seven.jsonl"):
-        if dt < t0 or dt > t1:
-            continue
+    print("\n=== box actually did ===", flush=True)
+    for dt, o in load_tail("seven.jsonl", t0, t1):
         ev = o.get("event")
         if ev in ("paper_fire", "struct40_submit", "struct40_fail") or o.get("submit"):
-            print(
-                "%s %s skip=%s poi=%s mid=%s hold=%s shelf=%s lean=%s"
-                % (dt.strftime("%H:%M:%S"), ev, o.get("skip"), o.get("poi"),
-                   o.get("mid"), o.get("hold"), o.get("on_shelf"), o.get("tape_lean"))
-            )
+            print("%s %s skip=%s poi=%s mid=%s hold=%s shelf=%s lean=%s" % (
+                dt.strftime("%H:%M:%S"), ev, o.get("skip"), o.get("poi"),
+                o.get("mid"), o.get("hold"), o.get("on_shelf"), o.get("tape_lean")), flush=True)
 
 
 if __name__ == "__main__":
