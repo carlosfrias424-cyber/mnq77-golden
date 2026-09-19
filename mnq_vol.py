@@ -108,6 +108,7 @@ class MnqVol:
         self.m5: Optional[Candle] = None
         self.closed_1: deque[Candle] = deque(maxlen=80)
         self.closed_5: deque[Candle] = deque(maxlen=40)
+        self._tape: deque[tuple[float, float]] = deque(maxlen=12000)
         self._stop = threading.Event()
         self._thread = None
         self._client = None
@@ -163,8 +164,20 @@ class MnqVol:
         with self._lock:
             return self._prints
 
+    def _delta_window_unlocked(self, sec: float, now: float) -> tuple[float, int]:
+        cut = now - sec
+        s = 0.0
+        n = 0
+        for ts, d in reversed(self._tape):
+            if ts < cut:
+                break
+            s += d
+            n += 1
+        return s, n
+
     def tape_5m(self, bounce: bool) -> tuple[bool, dict]:
-        """Lean from Databento 5m delta (buy minus sell size), not Dual 5s."""
+        """Lean from Databento 5m delta (buy minus sell size), not Dual 5s.
+        Kept for rollback. live_77 uses tape_eye."""
         with self._lock:
             last = self.closed_5[-1] if self.closed_5 else None
             prev = self.closed_5[-2] if len(self.closed_5) >= 2 else None
@@ -185,6 +198,46 @@ class MnqVol:
         if not ok:
             met["why"] = "tape_against_5m"
         return ok, met
+
+    def tape_eye(self, bounce: bool) -> tuple[bool, dict]:
+        """GO if 30s CVD with the trade, OR last closed 5m is dying into
+        the rail and 30s is not slamming against. 5s is logged only — never a veto.
+        """
+        with self._lock:
+            now = self._last_ts if self._last_ts is not None else time.time()
+            d30, n30 = self._delta_window_unlocked(30.0, now)
+            d5s, n5s = self._delta_window_unlocked(5.0, now)
+            last = self.closed_5[-1] if self.closed_5 else None
+            prev = self.closed_5[-2] if len(self.closed_5) >= 2 else None
+            live = self.m5
+            d_last = last.delta if last else None
+            d_prev = prev.delta if prev else None
+            d_live = live.delta if live else None
+        met = dict(
+            src="tape_eye_30s_5m",
+            d30=round(d30, 1), n30=n30,
+            d5s=round(d5s, 1), n5s=n5s,
+            d_last=d_last, d_prev=d_prev, d_live=d_live,
+            symbol=self.symbols[0],
+        )
+        have_30 = n30 >= 3
+        with_30 = have_30 and ((d30 > 0) if bounce else (d30 < 0))
+        slam_30 = have_30 and ((d30 < 0) if bounce else (d30 > 0))
+        dying_5m = None
+        if d_last is not None and d_prev is not None:
+            dying_5m = (d_last > d_prev) if bounce else (d_last < d_prev)
+        met.update(with_30=with_30, slam_30=slam_30, dying_5m=dying_5m)
+        if with_30:
+            met["why"] = "with_30s"
+            return True, met
+        if dying_5m is True and not slam_30:
+            met["why"] = "dying_5m_no_slam"
+            return True, met
+        if not have_30 and dying_5m is None:
+            met["why"] = "tape_unknown_no_skip"
+            return True, met
+        met["why"] = "tape_against_30s_5m"
+        return False, met
 
     def _roll(self, minutes: int, ts: float, px: float, vol: float, dlt: float):
         t0 = bar_open(ts, minutes)
@@ -216,6 +269,7 @@ class MnqVol:
             self._last_px = px
             self._last_ts = ts
             self._prints += 1
+            self._tape.append((ts, dlt))
             self._roll(1, ts, px, sz, dlt)
             self._roll(5, ts, px, sz, dlt)
 
