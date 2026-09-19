@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Wednesday 9/16 ONLY. Unique paper_fire (fire_off) → 20/40 path.
-Same book as Thursday live: one position, SL20 TP40.
-Does not touch live_77. Dual unused.
+"""Wednesday 9/16. Unique paper_fire → 20/40 using seven.jsonl mids only.
+If first mid is >8 pts from entry, tape is a hole — skip that sit.
+Sequential one position. Dual unused. Live not touched.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ CDT = timezone(timedelta(hours=-5))
 ROOT = Path("/home/administrator/.openclaw/workspace/mnq_hybrid/logs")
 T0 = datetime(2026, 9, 16, 4, 0, tzinfo=CDT)
 T1 = datetime(2026, 9, 16, 11, 30, tzinfo=CDT)
-SL, TP = 20.0, 40.0
+SL, TP, HOLE = 20.0, 40.0, 8.0
 
 
 def dt_of(o):
@@ -34,8 +34,8 @@ def dt_of(o):
     return datetime.fromtimestamp(t / 1000, tz=timezone.utc).astimezone(CDT)
 
 
-def load_jsonl(name, t_lo=None, t_hi=None):
-    p = ROOT / name
+def load_seven():
+    p = ROOT / "seven.jsonl"
     if not p.exists():
         print("MISSING", p)
         return []
@@ -48,11 +48,7 @@ def load_jsonl(name, t_lo=None, t_hi=None):
         except Exception:
             continue
         dt = dt_of(o)
-        if dt is None:
-            continue
-        if t_lo is not None and dt < t_lo:
-            continue
-        if t_hi is not None and dt > t_hi:
+        if dt is None or dt < T0 or dt > T1 + timedelta(hours=6):
             continue
         out.append((dt, o))
     out.sort(key=lambda x: x[0])
@@ -80,9 +76,9 @@ def unique_fires(rows):
     return fires
 
 
-def mids_after(dec, t0):
+def mids_after(rows, t0):
     out = []
-    for dt, o in dec:
+    for dt, o in rows:
         if dt < t0:
             continue
         m = o.get("mid")
@@ -98,10 +94,12 @@ def mids_after(dec, t0):
 
 
 def path(side, entry, series):
+    if not series:
+        return "NO_TAPE", None, 0.0, 0.0, None
+    first = series[0][1]
+    if abs(first - entry) > HOLE:
+        return "HOLE", None, abs(first - entry), 0.0, None
     mae = mfe = 0.0
-    hit = "OPEN"
-    hit_t = None
-    pnl = None
     for dt, mid in series:
         if side == "Buy":
             fav, adv = mid - entry, entry - mid
@@ -113,39 +111,37 @@ def path(side, entry, series):
             return "SL", -SL, mae, mfe, dt
         if fav >= TP:
             return "TP", TP, mae, mfe, dt
-    return hit, pnl, mae, mfe, hit_t
+    return "OPEN", None, mae, mfe, None
 
 
 def main():
-    print("VERSION wed_unique_paper_20_40_sortfix  9/16 04:00-11:30")
-    print("Unique paper_fire. Sequential one position. Dual off. Live bot not touched.\n")
-    seven = load_jsonl("seven.jsonl", T0, T1)
-    dec = load_jsonl("decision.jsonl", T0, T1 + timedelta(hours=6))
-    fires = unique_fires(seven)
-    print("unique paper GOs", len(fires), "decision rows", len(dec))
+    print("VERSION wed_seven_mids_20_40  9/16 04:00-11:30")
+    print("Path on seven.jsonl mids. Hole if first mid >8 from entry.\n")
+    rows = load_seven()
+    fires = unique_fires(rows)
+    print("unique paper GOs", len(fires), "seven rows", len(rows))
     if not fires:
-        print("NO PAPER FIRES — Wednesday log empty")
-        return
-    if not dec:
-        print("NO DECISION MIDS — cannot path")
+        print("NO PAPER FIRES")
         return
 
-    print("when           side  entry     poi                         hit   pnl    MAE   MFE  skip")
+    print("when           side  entry     poi                         hit   pnl    MAE   MFE")
     taken = []
-    skipped = 0
+    skipped = holes = 0
     busy_until = None
     for dt, side, entry, poi in fires:
-        skip = ""
         if busy_until is not None and dt < busy_until:
-            skip = "open_position"
             skipped += 1
-            print(f"{dt:%H:%M:%S}  {side:4} {entry:8.2f}  {poi:<26}  skip          {skip}")
+            print(f"{dt:%H:%M:%S}  {side:4} {entry:8.2f}  {poi:<26}  skip          open_position")
             continue
-        series = mids_after(dec, dt)
+        series = mids_after(rows, dt)
         hit, pnl, mae, mfe, hit_t = path(side, entry, series)
+        if hit == "HOLE":
+            holes += 1
+            print(f"{dt:%H:%M:%S}  {side:4} {entry:8.2f}  {poi:<26}  HOLE          first_mid_gap={mae:.1f}")
+            continue
         if hit in ("SL", "TP") and hit_t is not None:
             busy_until = hit_t
-        else:
+        elif hit == "OPEN":
             busy_until = dt + timedelta(hours=6)
         taken.append((hit, pnl, mae, mfe))
         ptxt = f"{pnl:+6.1f}" if pnl is not None else "   n/a"
@@ -156,20 +152,19 @@ def main():
 
     w = sum(1 for h, p, *_ in taken if h == "TP")
     l = sum(1 for h, p, *_ in taken if h == "SL")
-    o = sum(1 for h, p, *_ in taken if h not in ("TP", "SL"))
+    o = sum(1 for h, p, *_ in taken if h == "OPEN")
     pnl = sum(p or 0 for _, p, *_ in taken)
     n = w + l
     print("\n--- card ---")
-    print(f"unique GOs {len(fires)}  taken {len(taken)}  skipped_open {skipped}  still_open {o}")
+    print(f"unique GOs {len(fires)}  taken {len(taken)}  skipped_open {skipped}  holes {holes}  still_open {o}")
     print(f"W {w}  L {l}  WR {100*w/n if n else 0:.0f}%")
     if l:
-        pf = (w * 40.0) / (l * 20.0)
-        print(f"PF {pf:.2f}  RR 2:1  PnL {pnl:+.0f}")
+        print(f"PF {(w * 40.0) / (l * 20.0):.2f}  RR 2:1  PnL {pnl:+.0f}")
     elif w:
         print(f"PF inf  RR 2:1  PnL {pnl:+.0f}")
     else:
         print(f"PnL {pnl:+.0f}")
-    print("Thursday live was +80 on 8 fills. This is Wednesday paper, same 20/40.")
+    print("MAE on a real SL should be ~20, not 290. Dual off.")
     print("DONE one version.")
 
 
