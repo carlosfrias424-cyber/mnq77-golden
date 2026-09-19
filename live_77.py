@@ -4,8 +4,7 @@
 Fire LIVE (not on 1m close):
   1) this 1m wick tags the last-webhook rail (within 10)
   2) last print holds the SIDE (bounce over / fade under)
-  3) tape: 30s CVD with us, OR last closed 5m dying into rail and 30s not slamming against
-     (5s is logged only — never a veto)
+  3) tape leans with the trade
   4) last print STILL within 15 of the rail  ← no chase
 Strip: 6-pt close cage. No WAIT_C2. No volume gate.
 
@@ -50,7 +49,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "sniper_live_15_tape_eye"
+NOTE = "sniper_live_15"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -320,8 +319,7 @@ def main():
     emit(event="seven_start", fire=FIRE, book=BOOK, note=NOTE, symbol=SYMBOL,
          session_start="04:00", session_end="11:30", vol_src="databento_trades",
          dual="UNPLUGGED", opp_reset=OPP_RESET, watch=WATCH, fire_near=FIRE_NEAR,
-         be=BE_PTS, lock="120s_then_clear", fire_mode="sniper_live",
-         tape="eye_30s_5m")
+         be=BE_PTS, lock="120s_then_clear", fire_mode="sniper_live")
 
     m = Machine()
     last_poi = 0.0
@@ -431,7 +429,7 @@ def main():
         tagged = (abs(bar_lo - rail.px) <= WATCH) if bounce else (abs(bar_hi - rail.px) <= WATCH)
         near = abs(last_px - rail.px) <= FIRE_NEAR
         hold = True if loc is None else ((last_px >= rail.px) if bounce else (last_px <= rail.px))
-        lean, tmet = dbvol.tape_eye(bounce)
+        lean, tmet = dbvol.tape_5m(bounce)
         rec.update(
             tagged=tagged, near=near, hold=hold, tape_lean=lean, tape=tmet,
             dist=round(abs(last_px - rail.px), 3),
