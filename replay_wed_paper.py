@@ -34,7 +34,7 @@ def dt_of(o):
     return datetime.fromtimestamp(t / 1000, tz=timezone.utc).astimezone(CDT)
 
 
-def load_jsonl(name):
+def load_jsonl(name, t_lo=None, t_hi=None):
     p = ROOT / name
     if not p.exists():
         print("MISSING", p)
@@ -50,8 +50,12 @@ def load_jsonl(name):
         dt = dt_of(o)
         if dt is None:
             continue
+        if t_lo is not None and dt < t_lo:
+            continue
+        if t_hi is not None and dt > t_hi:
+            continue
         out.append((dt, o))
-    out.sort()
+    out.sort(key=lambda x: x[0])
     return out
 
 
@@ -113,10 +117,10 @@ def path(side, entry, series):
 
 
 def main():
-    print("VERSION wed_unique_paper_20_40  9/16 04:00-11:30")
+    print("VERSION wed_unique_paper_20_40_sortfix  9/16 04:00-11:30")
     print("Unique paper_fire. Sequential one position. Dual off. Live bot not touched.\n")
-    seven = load_jsonl("seven.jsonl")
-    dec = load_jsonl("decision.jsonl")
+    seven = load_jsonl("seven.jsonl", T0, T1)
+    dec = load_jsonl("decision.jsonl", T0, T1 + timedelta(hours=6))
     fires = unique_fires(seven)
     print("unique paper GOs", len(fires), "decision rows", len(dec))
     if not fires:
