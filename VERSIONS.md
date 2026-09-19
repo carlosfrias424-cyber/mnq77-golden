@@ -6,7 +6,11 @@ Dual stays UNPLUGGED. Book: 5×1, 20/40, BE off.
 |---|---|---|---|
 | `shelf6` | `bca3cc8cb7290815c20275c40c82263d1b947b7b` | 1m **close** must sit within **6** of rail | 5m delta already our color |
 | `sniper10` | `ae82b242d52e04a0ef0e4641401ca96a9f7ffc7e` | **live**, fill ≤10 off rail | same 5m |
-| `sniper15` (current main) | `478b24416bc8285aba5563f9b0b613d9c98e902f` | **live**, fill ≤**15** off rail | same 5m |
+| `sniper15` (current live) | `478b24416bc8285aba5563f9b0b613d9c98e902f` | **live**, fill ≤**15** off rail | same 5m |
+| `tape_eye` PARKED | live_77 `e50cc5c` + mnq_vol `6170ccc` | same sniper15 | 30s flip / 5m dying; 5s never veto |
+
+Parked spec: [pending/tape_eye.md](pending/tape_eye.md) · [issue #1](https://github.com/carlosfrias424-cyber/mnq77-golden/issues/1)
+Review ~2026-09-26. Say **Ship pending tape_eye** to deploy. Dual stays off.
 
 Branch freeze of sniper15: `backup/sniper15-20260918`
 
