@@ -18,7 +18,7 @@ Pine name is the side:
   H4 / H1 → LOCK from first print off the rail this visit
   OPEN / ONH / ONL / EMA → not rails
 
-Book: 5 MNQ DEMO, stop 20, TP 40, BE off. Session 04:00–11:30 CT M–F.
+Book: 5 MNQ DEMO, stop 20, TP 40, BE off. Session 04:00–16:00 CT M–F.
 Symbol MNQZ6. Rail = last webhook.
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ FIRE = True
 TICK, WATCH, FIRE_NEAR = 0.25, 10.0, 15.0
 STOP_PTS, TP_PTS, BE_PTS, QTY = 20.0, 40.0, 0.0, 5
 OPP_RESET = 20.0
-SESSION_START, SESSION_END = 4 * 60, 11 * 60 + 30
+SESSION_START, SESSION_END = 4 * 60, 16 * 60
 TZ = ZoneInfo("America/Chicago")
 HOLIDAYS = {date(2026, 9, 7), date(2026, 11, 26), date(2026, 12, 25)}
 SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
@@ -77,7 +77,7 @@ def session():
     if mins < SESSION_START:
         return False, "before_4am"
     if mins >= SESSION_END:
-        return False, "after_1130"
+        return False, "after_1600"
     return True, "open"
 
 
@@ -317,7 +317,7 @@ def main():
         emit(event="fatal", err=str(e)[:300], note="databento required — dual unplugged")
         return
     emit(event="seven_start", fire=FIRE, book=BOOK, note=NOTE, symbol=SYMBOL,
-         session_start="04:00", session_end="11:30", vol_src="databento_trades",
+         session_start="04:00", session_end="16:00", vol_src="databento_trades",
          dual="UNPLUGGED", opp_reset=OPP_RESET, watch=WATCH, fire_near=FIRE_NEAR,
          be=BE_PTS, lock="120s_then_clear", fire_mode="sniper_live")
 

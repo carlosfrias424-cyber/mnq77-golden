@@ -7,7 +7,7 @@
 | Version | `sniper_live_15` (see [VERSIONS.md](VERSIONS.md) to restore) |
 | Book | 5 MNQ DEMO, stop 20, TP 40, BE **off** |
 | Dual | UNPLUGGED |
-| Session | 04:00–11:30 CT M–F |
+| Session | 04:00–16:00 CT M–F |
 | Symbol | MNQZ6 |
 | Fire | live sniper: tag within 10, fill ≤15 off rail |
 
