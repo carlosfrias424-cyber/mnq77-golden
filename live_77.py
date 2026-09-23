@@ -1,25 +1,15 @@
 #!/usr/bin/env python3
-"""7/7 sniper B. Dual UNPLUGGED. DEMO SIM ON.
+"""7/7 sniper. Dual UNPLUGGED. DEMO SIM ON.
 
-Fire LIVE (not on 1m close):
-  1) this 1m wick tags the last-webhook rail (within 10)
-  2) last print holds the SIDE (bounce over / fade under)
-  3) tape leans with the trade
-  4) last print STILL within 15 of the rail  ← no chase
-Strip: 6-pt close cage. No WAIT_C2. No volume gate.
-
-If the reaction already ran >15 off the rail → skip (chase).
-One attempt per forming 1m. Spent only after a real send.
-Lock: 120s after send, then clear. place_struct40 still blocks net!=0.
-
-Pine name is the side:
-  H4L H1L PDL PWL → bounce long
-  H4H H1H PDH PWH → fade short
-  H4 / H1 → LOCK from first print off the rail this visit
-  OPEN / ONH / ONL / EMA → not rails
-
+Fire only on a failed retest (retest_v1). Not the first touch.
+  1) this 1m bar actually traded the rail (low <= rail <= high)
+  2) a prior test of this same rail already happened today
+  3) the retest failed: higher low while still over (buy),
+     or lower high while still under (sell)
+  4) the push into the rail is dying (live 5m delta past the last closed)
+  5) last print still within 15
+One side per rail per day. No first-print flip. No 20-pt re-arm.
 Book: 5 MNQ DEMO, stop 20, TP 40, BE off. Session 04:00–16:00 CT M–F.
-Symbol MNQZ6. Rail = last webhook.
 """
 from __future__ import annotations
 
@@ -49,7 +39,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "sniper_live_15"
+NOTE = "retest_v1"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -307,6 +297,31 @@ def expire_spent(spent: dict, last_px: float):
     return dead
 
 
+def note_touch(tests: dict, key: str, now: float, lo: float, hi: float, px: float):
+    """A test is a stretch where the 1m bar actually contains the rail.
+    Leaving for 60s closes it. Coming back is the next test.
+    """
+    st = tests.setdefault(key, {"cur": None, "closed": []})
+    includes = lo <= px <= hi
+    cur = st["cur"]
+    if not includes:
+        if cur and now - cur["last"] >= 60:
+            st["closed"].append({"lo": cur["lo"], "hi": cur["hi"]})
+            st["closed"] = st["closed"][-8:]
+            st["cur"] = None
+        return st
+    if cur is None or now - cur["last"] >= 60:
+        if cur:
+            st["closed"].append({"lo": cur["lo"], "hi": cur["hi"]})
+            st["closed"] = st["closed"][-8:]
+        st["cur"] = {"lo": lo, "hi": hi, "last": now, "t0": now}
+    else:
+        cur["lo"] = min(cur["lo"], lo)
+        cur["hi"] = max(cur["hi"], hi)
+        cur["last"] = now
+    return st
+
+
 def main():
     envload()
     os.environ["TRADOVATE_SYMBOL"] = SYMBOL
@@ -319,7 +334,8 @@ def main():
     emit(event="seven_start", fire=FIRE, book=BOOK, note=NOTE, symbol=SYMBOL,
          session_start="04:00", session_end="16:00", vol_src="databento_trades",
          dual="UNPLUGGED", opp_reset=OPP_RESET, watch=WATCH, fire_near=FIRE_NEAR,
-         be=BE_PTS, lock="120s_then_clear", fire_mode="sniper_live")
+         be=BE_PTS, lock="120s_then_clear", fire_mode="sniper_live",
+         tape="retest_dying")
 
     m = Machine()
     last_poi = 0.0
@@ -327,6 +343,7 @@ def main():
     rails: list[Rail] = []
     n = 0
     spent = {}
+    tests = {}
     spent_day = datetime.now(TZ).date()
 
     while True:
@@ -334,6 +351,7 @@ def main():
         today = datetime.now(TZ).date()
         if today != spent_day:
             spent.clear()
+            tests.clear()
             spent_day = today
 
         if now - last_hb > 60:
@@ -354,9 +372,8 @@ def main():
         last_px, last_ts = last
         n += 1
 
-        expired = expire_spent(spent, last_px)
-        if expired:
-            emit(event="spent_cleared", keys=list(expired), mid=round(last_px, 3))
+        # One side per rail per day. Do not re-arm after 20 pts (that was the flip).
+        _ = expire_spent
 
         if not dbvol.fresh(now):
             if n % 40 == 0:
@@ -372,6 +389,12 @@ def main():
         bar_lo = min(forming.l, last_px)
         bar_hi = max(forming.h, last_px)
         t0 = forming.t0
+        for st in tests.values():
+            cur = st["cur"]
+            if cur and now - cur["last"] >= 60:
+                st["closed"].append({"lo": cur["lo"], "hi": cur["hi"]})
+                st["closed"] = st["closed"][-8:]
+                st["cur"] = None
 
         rail = alert_rail(rails, bar_lo, bar_hi)
         rec = dict(
@@ -404,40 +427,41 @@ def main():
             continue
 
         loc = loc_over(last_px, rail.px)
-        if m.side_locked is None:
-            named = bounce_from_name(rail.kind)
-            if named is not None:
-                m.side_locked = named
-                rec["side_lock"] = "name"
-            elif loc is not None:
-                m.side_locked = loc
-                rec["side_lock"] = "first_print"
-            else:
-                rec["reason"] = "at_rail"
-                if n % 20 == 0:
-                    emit(**rec)
-                time.sleep(0.25)
-                continue
-
-        bounce = m.side_locked
-        rec["sr"] = "support" if bounce else "resistance"
+        st = note_touch(tests, rail.key, now, bar_lo, bar_hi, rail.px)
+        includes = bar_lo <= rail.px <= bar_hi
+        named = bounce_from_name(rail.kind)
+        if named is not None:
+            bounce = named
+        elif loc is True:
+            bounce = True
+        elif loc is False:
+            bounce = False
+        else:
+            bounce = None
+        rec["sr"] = None if bounce is None else ("support" if bounce else "resistance")
         rec["loc"] = "over" if loc else ("under" if loc is False else "on")
-        rec["tag"] = "low" if bounce else "high"
         rec["inferred"] = rail.kind in BARE
-        rec["side_locked"] = bounce
-
-        tagged = (abs(bar_lo - rail.px) <= WATCH) if bounce else (abs(bar_hi - rail.px) <= WATCH)
+        rec["includes"] = includes
+        rec["visit"] = len(st["closed"]) + (1 if st["cur"] else 0)
         near = abs(last_px - rail.px) <= FIRE_NEAR
-        hold = True if loc is None else ((last_px >= rail.px) if bounce else (last_px <= rail.px))
-        lean, tmet = dbvol.tape_5m(bounce)
+        _, tmet = dbvol.tape_5m(True if bounce else False)
         rec.update(
-            tagged=tagged, near=near, hold=hold, tape_lean=lean, tape=tmet,
+            near=near, tape=tmet,
             dist=round(abs(last_px - rail.px), 3),
             stop_pts=STOP_PTS, tp_pts=TP_PTS, watch=WATCH, fire_near=FIRE_NEAR, t0=t0,
         )
+        if bounce is None:
+            rec["reason"] = "at_rail"
+            if n % 20 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
         m.bounce = bounce
+        m.side_locked = bounce
         m.picture = "bounce_long" if bounce else "fade_short"
         m.side = "Buy" if bounce else "Sell"
+        rec["side_locked"] = bounce
+        rec["tape_lean"] = False
 
         if rail.key in spent:
             rec.update(reason="rail_spent", snap=m.out("rail_spent"),
@@ -446,33 +470,56 @@ def main():
                 emit(**rec)
             time.sleep(0.25)
             continue
-
-        if not tagged:
-            rec["reason"] = "idle_no_hit"
-            if n % 20 == 0:
-                emit(**rec)
-            time.sleep(0.25)
-            continue
-        if loc is not None and loc != bounce:
+        if named is not None and loc is not None and loc != named:
             rec.update(reason="through", snap=m.out("through"))
             if n % 10 == 0:
                 emit(**rec)
             time.sleep(0.25)
             continue
-        if not hold:
-            rec.update(reason="gave_rail", snap=m.out("gave_rail"))
+        if not includes:
+            rec["reason"] = "air"
+            if n % 20 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
+        if not st["closed"]:
+            rec["reason"] = "first_touch"
+            if n % 10 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
+        prev = st["closed"][-1]
+        cur = st["cur"]
+        if bounce:
+            failed = bool(cur) and cur["lo"] > prev["lo"]
+            struct_reason = "no_higher_low"
+        else:
+            failed = bool(cur) and cur["hi"] < prev["hi"]
+            struct_reason = "no_lower_high"
+        rec["prior_lo"] = prev["lo"]
+        rec["prior_hi"] = prev["hi"]
+        rec["this_lo"] = None if not cur else cur["lo"]
+        rec["this_hi"] = None if not cur else cur["hi"]
+        if not failed:
+            rec.update(reason=struct_reason, snap=m.out(struct_reason))
+            if n % 10 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
+        d_live, d_last = tmet.get("d_live"), tmet.get("d_last")
+        if bounce:
+            dying = d_live is not None and d_last is not None and float(d_live) > float(d_last)
+        else:
+            dying = d_live is not None and d_last is not None and float(d_live) < float(d_last)
+        rec["tape_lean"] = dying
+        if not dying:
+            rec.update(reason="push_not_dying", snap=m.out("push_not_dying"))
             if n % 10 == 0:
                 emit(**rec)
             time.sleep(0.25)
             continue
         if not near:
             rec.update(reason="chase", snap=m.out("chase"))
-            if n % 10 == 0:
-                emit(**rec)
-            time.sleep(0.25)
-            continue
-        if not lean:
-            rec.update(reason="tape_against", snap=m.out("tape_against"))
             if n % 10 == 0:
                 emit(**rec)
             time.sleep(0.25)
