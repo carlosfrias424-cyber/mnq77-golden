@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """7/7 sniper. Dual UNPLUGGED. DEMO SIM ON.
 
-Fire only on a failed retest (retest_v1). Not the first touch.
-  1) this 1m bar actually traded the rail (low <= rail <= high)
+Fire only on a failed retest. Not the first touch.
+  1) wick within 10 of the rail (same touch as before)
   2) a prior test of this same rail already happened today
   3) the retest failed: higher low while still over (buy),
      or lower high while still under (sell)
@@ -39,7 +39,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "retest_v1"
+NOTE = "retest_wick10"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -297,14 +297,13 @@ def expire_spent(spent: dict, last_px: float):
     return dead
 
 
-def note_touch(tests: dict, key: str, now: float, lo: float, hi: float, px: float):
-    """A test is a stretch where the 1m bar actually contains the rail.
-    Leaving for 60s closes it. Coming back is the next test.
+def note_touch(tests: dict, key: str, now: float, lo: float, hi: float, tagged: bool):
+    """A test is a stretch where the wick is within 10 of the rail.
+    Buy: the low. Sell: the high. Leaving for 60s closes it.
     """
     st = tests.setdefault(key, {"cur": None, "closed": []})
-    includes = lo <= px <= hi
     cur = st["cur"]
-    if not includes:
+    if not tagged:
         if cur and now - cur["last"] >= 60:
             st["closed"].append({"lo": cur["lo"], "hi": cur["hi"]})
             st["closed"] = st["closed"][-8:]
@@ -427,7 +426,6 @@ def main():
             continue
 
         loc = loc_over(last_px, rail.px)
-        st = note_touch(tests, rail.key, now, bar_lo, bar_hi, rail.px)
         includes = bar_lo <= rail.px <= bar_hi
         named = bounce_from_name(rail.kind)
         if named is not None:
@@ -438,10 +436,18 @@ def main():
             bounce = False
         else:
             bounce = None
+        if bounce is None:
+            tagged = False
+        elif bounce:
+            tagged = abs(bar_lo - rail.px) <= WATCH
+        else:
+            tagged = abs(bar_hi - rail.px) <= WATCH
+        st = note_touch(tests, rail.key, now, bar_lo, bar_hi, tagged)
         rec["sr"] = None if bounce is None else ("support" if bounce else "resistance")
         rec["loc"] = "over" if loc else ("under" if loc is False else "on")
         rec["inferred"] = rail.kind in BARE
         rec["includes"] = includes
+        rec["tagged"] = tagged
         rec["visit"] = len(st["closed"]) + (1 if st["cur"] else 0)
         near = abs(last_px - rail.px) <= FIRE_NEAR
         _, tmet = dbvol.tape_5m(True if bounce else False)
@@ -476,8 +482,8 @@ def main():
                 emit(**rec)
             time.sleep(0.25)
             continue
-        if not includes:
-            rec["reason"] = "air"
+        if not tagged:
+            rec["reason"] = "idle_no_hit"
             if n % 20 == 0:
                 emit(**rec)
             time.sleep(0.25)
