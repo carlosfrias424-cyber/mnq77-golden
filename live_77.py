@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """7/7 sniper. Dual UNPLUGGED. DEMO SIM ON.
 
-Fire only on a failed retest. Not the first touch.
-  1) wick within 10 of the rail (same touch as before)
-  2) a prior test of this same rail already happened today
-  3) the retest failed: higher low while still over (buy),
+Fire only on a failed retest. Not the first touch. Not a breakout.
+  1) wick within 10 of the rail
+  2) price left that rail by 20 points, then came back
+     (the same push cannot be the second touch)
+  3) the return failed: higher low while still over (buy),
      or lower high while still under (sell)
   4) the push into the rail is dying (live 5m delta past the last closed)
   5) last print still within 15
@@ -23,6 +24,7 @@ ROOT = Path("/home/administrator/.openclaw/workspace/mnq_hybrid")
 POI = ROOT / "logs/tv_poi.jsonl"
 OUT = ROOT / "logs/seven.jsonl"
 LOCK = ROOT / "logs/submit.lock"
+SPENT = ROOT / "logs/rail_spent.json"
 BE20 = ROOT / "logs/be20.jsonl"
 PY = ROOT / ".venv/bin/python"
 SUBMIT = ROOT / "apps/tradovate/place_struct40.py"
@@ -39,7 +41,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "retest_wick10"
+NOTE = "retest_leave20"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -297,11 +299,45 @@ def expire_spent(spent: dict, last_px: float):
     return dead
 
 
-def note_touch(tests: dict, key: str, now: float, lo: float, hi: float, tagged: bool):
+def load_spent(day) -> dict:
+    try:
+        o = json.loads(SPENT.read_text())
+    except Exception:
+        return {}
+    if o.get("day") != day.isoformat():
+        return {}
+    out = {}
+    for k, v in (o.get("rails") or {}).items():
+        try:
+            out[k] = float(v)
+        except Exception:
+            continue
+    return out
+
+
+def mark_spent(day, key: str, px: float) -> dict:
+    cur = load_spent(day)
+    cur[key] = float(px)
+    SPENT.parent.mkdir(parents=True, exist_ok=True)
+    SPENT.write_text(json.dumps({"day": day.isoformat(), "rails": cur}))
+    return cur
+
+
+def note_touch(tests: dict, key: str, now: float, lo: float, hi: float, tagged: bool,
+               px: float, rail_px: float, allow: bool):
     """A test is a stretch where the wick is within 10 of the rail.
-    Buy: the low. Sell: the high. Leaving for 60s closes it.
+    It closes after the wick has been gone for 60s.
+    A side arms only while price is 20 points away and not touching.
+    The visit that prints that leave cannot be the visit that fires.
     """
-    st = tests.setdefault(key, {"cur": None, "closed": []})
+    st = tests.setdefault(key, {"cur": None, "closed": [], "arm_buy": None, "arm_sell": None})
+    if allow and not tagged:
+        if px >= rail_px + OPP_RESET:
+            st["arm_buy"] = now
+        if px <= rail_px - OPP_RESET:
+            st["arm_sell"] = now
+    if not allow:
+        return st
     cur = st["cur"]
     if not tagged:
         if cur and now - cur["last"] >= 60:
@@ -341,17 +377,27 @@ def main():
     last_hb = 0.0
     rails: list[Rail] = []
     n = 0
-    spent = {}
+    spent = load_spent(datetime.now(TZ).date())
     tests = {}
     spent_day = datetime.now(TZ).date()
+    tests_cleared = None
 
     while True:
         now = time.time()
         today = datetime.now(TZ).date()
         if today != spent_day:
-            spent.clear()
-            tests.clear()
+            spent = {}
+            tests = {}
             spent_day = today
+            tests_cleared = None
+            try:
+                SPENT.write_text(json.dumps({"day": today.isoformat(), "rails": {}}))
+            except Exception:
+                pass
+        sess_ok, _sess = session()
+        if sess_ok and tests_cleared != today:
+            tests.clear()
+            tests_cleared = today
 
         if now - last_hb > 60:
             ok, why = session()
@@ -442,7 +488,7 @@ def main():
             tagged = abs(bar_lo - rail.px) <= WATCH
         else:
             tagged = abs(bar_hi - rail.px) <= WATCH
-        st = note_touch(tests, rail.key, now, bar_lo, bar_hi, tagged)
+        st = note_touch(tests, rail.key, now, bar_lo, bar_hi, tagged, last_px, rail.px, sess_ok)
         rec["sr"] = None if bounce is None else ("support" if bounce else "resistance")
         rec["loc"] = "over" if loc else ("under" if loc is False else "on")
         rec["inferred"] = rail.kind in BARE
@@ -469,6 +515,7 @@ def main():
         rec["side_locked"] = bounce
         rec["tape_lean"] = False
 
+        spent.update(load_spent(today))
         if rail.key in spent:
             rec.update(reason="rail_spent", snap=m.out("rail_spent"),
                        spent_px=spent[rail.key])
@@ -496,6 +543,13 @@ def main():
             continue
         prev = st["closed"][-1]
         cur = st["cur"]
+        arm = st.get("arm_buy") if bounce else st.get("arm_sell")
+        if not arm or not cur or cur.get("t0", 0) <= arm:
+            rec["reason"] = "no_leave"
+            if n % 10 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
         if bounce:
             failed = bool(cur) and cur["lo"] > prev["lo"]
             struct_reason = "no_higher_low"
@@ -561,7 +615,7 @@ def main():
             if rc == 0:
                 m.spent_fill = True
                 m.phase = "FILLED"
-                spent[rail.key] = rail.px
+                spent.update(mark_spent(today, rail.key, rail.px))
                 rec["rail_spent"] = True
         emit(**rec)
         time.sleep(0.25)
