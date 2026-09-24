@@ -9,7 +9,7 @@ Fire only on a failed retest. Not the first touch. Not a breakout.
      or lower high while still under (sell)
   4) the push into the rail is dying (live 5m delta past the last closed)
   5) last print still within 15
-One side per rail per day. No first-print flip. No 20-pt re-arm.
+One rail can fire again after price leaves and comes back. No first-print flip. No 20-pt re-arm.
 Book: 5 MNQ DEMO, stop 20, TP 40, BE off. Session 04:00–16:00 CT M–F.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "retest_leave20"
+NOTE = "retest_leave20_open"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -417,7 +417,7 @@ def main():
         last_px, last_ts = last
         n += 1
 
-        # One side per rail per day. Do not re-arm after 20 pts (that was the flip).
+        # Rail stays alive. Same touch still will not fire twice.
         _ = expire_spent
 
         if not dbvol.fresh(now):
@@ -515,14 +515,6 @@ def main():
         rec["side_locked"] = bounce
         rec["tape_lean"] = False
 
-        spent.update(load_spent(today))
-        if rail.key in spent:
-            rec.update(reason="rail_spent", snap=m.out("rail_spent"),
-                       spent_px=spent[rail.key])
-            if n % 20 == 0:
-                emit(**rec)
-            time.sleep(0.25)
-            continue
         if named is not None and loc is not None and loc != named:
             rec.update(reason="through", snap=m.out("through"))
             if n % 10 == 0:
@@ -615,8 +607,7 @@ def main():
             if rc == 0:
                 m.spent_fill = True
                 m.phase = "FILLED"
-                spent.update(mark_spent(today, rail.key, rail.px))
-                rec["rail_spent"] = True
+                rec["rail_open"] = True
         emit(**rec)
         time.sleep(0.25)
 
