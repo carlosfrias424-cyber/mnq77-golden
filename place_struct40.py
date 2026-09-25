@@ -153,6 +153,25 @@ def main() -> int:
     if env_sym.startswith("MNQU"):
         log(event="symbol_override", from_env=env_sym, to=symbol)
 
+    if os.environ.get("MNQ_PLAIN") == "1":
+        body = {
+            "accountId": account_id,
+            "accountSpec": spec,
+            "symbol": symbol,
+            "action": side,
+            "orderQty": qty,
+            "orderType": "Market",
+            "timeInForce": "Day",
+            "isAutomated": True,
+        }
+        r = requests.post(base + "/order/placeorder", headers=h, json=body, timeout=20)
+        try:
+            result = r.json()
+        except Exception:
+            result = {"text": r.text[:400]}
+        log(event="plain_fire", status=r.status_code, side=side, symbol=symbol, qty=qty, result=result, note="webull_copy")
+        return 0 if r.status_code < 300 else 7
+
     if os.environ.get("MNQ_ALLOW_ADD") != "1":
         pos_raw = requests.get(base + "/position/list", headers=h, timeout=20).json()
         positions = pos_raw if isinstance(pos_raw, list) else []
