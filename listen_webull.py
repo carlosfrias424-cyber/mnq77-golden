@@ -13,9 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-from webull.core.client import ApiClient
 from webull.trade.events.types import EVENT_TYPE_ORDER, ORDER_STATUS_CHANGED
-from webull.trade.trade_client import TradeClient
 from webull.trade.trade_events_client import TradeEventsClient
 
 KEEP = {"FILLED", "FINAL_FILLED"}
@@ -145,17 +143,7 @@ def on_event(event_type, subscribe_type, payload, raw):
 def main():
     key = need("WEBULL_APP_KEY")
     secret = need("WEBULL_APP_SECRET")
-    account = os.environ.get("WEBULL_ACCOUNT_ID", "").strip()
-    api = ApiClient(key, secret, "us")
-    res = TradeClient(api).account_v2.get_account_list()
-    if res.status_code != 200:
-        emit({"event": "account_list_fail", "status": res.status_code, "body": (res.text or "")[:300]})
-        raise SystemExit(1)
-    body = res.json()
-    emit({"event": "account_list", "body": body})
-    if not account:
-        print("set WEBULL_ACCOUNT_ID from the account_list above", file=sys.stderr)
-        raise SystemExit(2)
+    account = need("WEBULL_ACCOUNT_ID")
     emit({"event": "subscribe", "account": account, "host": "events-api.webull.com"})
     client = TradeEventsClient(key, secret, "us")
     client.on_log = on_log
