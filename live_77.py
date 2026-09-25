@@ -8,7 +8,8 @@ Fire only on a failed retest. Not the first touch. Not a breakout.
   3) the return failed: higher low while still over (buy),
      or lower high while still under (sell)
   4) the push into the rail is dying (live 5m delta past the last closed)
-  5) last print still within 15
+  5) last print still within 15, and the entry bar has not
+     run more than 15 past the rail
 One rail can fire again after price leaves and comes back. No first-print flip. No 20-pt re-arm.
 Book: 5 MNQ DEMO, stop 20, TP 40, BE off. Session 04:00–16:00 CT M–F.
 """
@@ -41,7 +42,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "retest_leave20_open"
+NOTE = "retest_near15"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -572,6 +573,13 @@ def main():
             continue
         if not near:
             rec.update(reason="chase", snap=m.out("chase"))
+            if n % 10 == 0:
+                emit(**rec)
+            time.sleep(0.25)
+            continue
+        far = (bar_hi - rail.px) if bounce else (rail.px - bar_lo)
+        if far > FIRE_NEAR:
+            rec.update(reason="bar_left", snap=m.out("bar_left"), far=round(far, 3))
             if n % 10 == 0:
                 emit(**rec)
             time.sleep(0.25)
