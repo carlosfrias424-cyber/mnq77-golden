@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Listen to Webull fills and copy each one into the current Tradovate DEMO.
+"""Listen to Webull fills and copy each finished NQ order into the current Tradovate DEMO.
 
-Does not place Webull orders. Does not start the sniper.
-Demo only. One MNQZ6 order per Webull order. Same 5 / 20 / 40 book.
+Same side, same contract count. No stop and no target. The next Webull fill is the exit.
+Does not place Webull orders. Does not start the sniper. Demo only.
 """
 from __future__ import annotations
 
@@ -45,31 +45,38 @@ def need(name: str) -> str:
 
 def copy_sim(payload: dict) -> None:
     order_id = str(payload.get("order_id") or "")
+    scene = str(payload.get("scene_type") or "")
+    if scene != "FINAL_FILLED":
+        emit({"event": "copy_skip", "reason": "wait_for_full_fill", "scene": scene, "order_id": order_id})
+        return
     if not order_id or order_id in SENT:
         emit({"event": "copy_skip", "reason": "already_sent", "order_id": order_id})
         return
     symbol = str(payload.get("symbol") or "").upper()
-    category = str(payload.get("category") or "").upper()
     if "NQ" not in symbol:
-        emit({"event": "copy_skip", "reason": "not_nq", "symbol": symbol, "category": category})
+        emit({"event": "copy_skip", "reason": "not_nq", "symbol": symbol})
         return
     raw_side = str(payload.get("side") or "").upper()
     side = "Buy" if raw_side == "BUY" else "Sell" if raw_side == "SELL" else ""
     if not side:
         emit({"event": "copy_skip", "reason": "bad_side", "side": raw_side, "order_id": order_id})
         return
+    try:
+        qty = int(float(payload.get("filled_qty") or payload.get("qty") or 0))
+    except (TypeError, ValueError):
+        qty = 0
+    if qty < 1:
+        emit({"event": "copy_skip", "reason": "no_qty", "order_id": order_id})
+        return
     SENT.add(order_id)
     env = os.environ.copy()
-    env.update({
-        "MNQ_SIDE": side,
-        "MNQ_QTY": os.environ.get("MNQ_QTY", "5"),
-        "TRADOVATE_ENV": "demo",
-        "TRADOVATE_SYMBOL": "MNQZ6",
-        "MNQ_STOP_PTS": "20",
-        "MNQ_T40": "40",
-        "MNQ_POI_NAME": "webull",
-        "MNQ_ENTRY": str(payload.get("filled_price") or ""),
-    })
+    env["MNQ_PLAIN"] = "1"
+    env["MNQ_SIDE"] = side
+    env["MNQ_QTY"] = str(qty)
+    env["TRADOVATE_ENV"] = "demo"
+    env["TRADOVATE_SYMBOL"] = "MNQZ6"
+    env.pop("MNQ_STOP_PTS", None)
+    env.pop("MNQ_T40", None)
     if "live.tradovateapi.com" in env.get("TRADOVATE_BASE", ""):
         emit({"event": "copy_skip", "reason": "live_forbidden", "order_id": order_id})
         return
@@ -85,14 +92,11 @@ def copy_sim(payload: dict) -> None:
         "event": "copy_sent",
         "order_id": order_id,
         "side": side,
+        "qty": qty,
         "symbol": "MNQZ6",
         "rc": r.returncode,
         "out": (r.stdout or r.stderr or "")[-400:],
     })
-    text = str(msg)
-    emit({"event": "log", "level": str(level), "msg": text[:500]})
-    if "NumOfConnExceed" in text or "AuthError" in text:
-        emit({"event": "stream_fail", "msg": text[:500]})
 
 
 def on_log(level, msg):
