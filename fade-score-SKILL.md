@@ -50,4 +50,6 @@ To propose a change:
 3. Use a later week as the check, not only the same days the idea came from.
 4. If the new card is not better on both, write "reject" and the reason.
 5. If it is better on both, write the one rule in one sentence and stop.
-6. Remember rejects. Do not bring back slope gates, a dying-tape gate, a rail dying for the day, or a 1.5R target unless the user asks.
+6. No idea is banned. A past reject can be tested again.
+7. Do not deploy. The user decides if a proposal becomes the live rule.
+
