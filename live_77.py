@@ -31,7 +31,7 @@ PY = ROOT / ".venv/bin/python"
 SUBMIT = ROOT / "apps/tradovate/place_struct40.py"
 sys.path.insert(0, str(ROOT / "apps" / "watcher7"))
 
-FIRE = True
+FIRE = False
 TICK, WATCH, FIRE_NEAR = 0.25, 10.0, 15.0
 STOP_PTS, TP_PTS, BE_PTS, QTY = 20.0, 40.0, 0.0, 5
 OPP_RESET = 20.0
@@ -42,7 +42,7 @@ SKIP_TAGS = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "retest_near15"
+NOTE = "blank"
 SYMBOL = "MNQZ6"
 BOOK = dict(qty=QTY, stop=STOP_PTS, tp=TP_PTS, be=BE_PTS, peel=False, runner=False, symbol=SYMBOL)
 
@@ -359,7 +359,9 @@ def note_touch(tests: dict, key: str, now: float, lo: float, hi: float, tagged: 
 
 
 def main():
-    envload()
+    emit(event="seven_start", fire=False, note="blank",
+         symbol=SYMBOL, fire_mode="off")
+    return
     os.environ["TRADOVATE_SYMBOL"] = SYMBOL
     try:
         from mnq_vol import start_from_env
