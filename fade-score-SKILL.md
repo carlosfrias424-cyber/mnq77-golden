@@ -43,6 +43,18 @@ That close is the entry. A short is the mirror.
 Trades tape: Databento B is buying, A is selling. One position.
 The same rail stays quiet until price is 20 points away.
 
+## Weekly cards
+
+Every week, print two cards. Do not pick a winner. Do not change the live bot.
+
+Monday card: the 15-point check is on the lift-bar close, the entry.
+Hermes card: the 15-point check is on the hold-bar close.
+Everything else is the same. Latest price of each named rail. Names are H4, H1, H4L, H4H, H1L, H1H, PDL, PDH, PWL, PWH. Skip ONH, ONL, EMA, OPEN. One position. That rail is quiet until price is 20 points away from the fill. Stop 20, target 40. Session 10:00–16:00 Chicago. MNQZ6. 1-minute bars.
+
+The first test, Sep 14–25 2026, was Monday 33 trades and +437 points, Hermes 54 trades and +899.50 points, max drawdown 128. Keep that row. Add the new week under it.
+
+Write both cards to /home/hermes/fade_notes.md: trades, wins, losses, points, max drawdown. A bigger number is not a reject. It is the comparison.
+
 Book data is Databento schema `mbp-1` only. Not `mbp-10`. Not `mbo`.
 `mbp-1` is the best bid and the best ask, price and size.
 The measurement is bid size reloading while sellers hit a long, or ask size reloading while buyers hit a short.
