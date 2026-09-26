@@ -47,13 +47,22 @@ The same rail stays quiet until price is 20 points away.
 
 Every week, print two cards. Do not pick a winner. Do not change the live bot.
 
-Monday card: the 15-point check is on the lift-bar close, the entry.
-Hermes card: the 15-point check is on the hold-bar close.
-Everything else is the same. Latest price of each named rail. Names are H4, H1, H4L, H4H, H1L, H1H, PDL, PDH, PWL, PWH. Skip ONH, ONL, EMA, OPEN. One position. That rail is quiet until price is 20 points away from the fill. Stop 20, target 40. Session 10:00–16:00 Chicago. MNQZ6. 1-minute bars.
+Monday card: the 15-point check is on the lift-bar close, the entry. One position. Stop booked at −20. Target booked at +40.
 
-The first test, Sep 14–25 2026, was Monday 33 trades and +437 points, Hermes 54 trades and +899.50 points, max drawdown 128. Keep that row. Add the new week under it.
+Hermes card: the 15-point check is on the hold-bar close. One position. Nothing new fires until the open trade is done.
+A stop that trades through is −20. Never the bar's worst price.
+A target that trades through is +40, including a trade still open at 16:00.
+If neither has traded by 16:00, close at the last price.
+Do not book a clock exit past +40 or past −20.
 
-Write both cards to /home/hermes/fade_notes.md: trades, wins, losses, points, max drawdown. A bigger number is not a reject. It is the comparison.
+Same rails. Latest price of each named rail. Names are H4, H1, H4L, H4H, H1L, H1H, PDL, PDH, PWL, PWH. Skip ONH, ONL, EMA, OPEN. Session 10:00–16:00 Chicago. MNQZ6. 1-minute bars. Stop 20, target 40.
+
+Sep 14–25, 2026, locked row:
+Monday: 33 trades, 18 wins, 15 losses, 54.5% win rate, profit factor 2.77, realized RR 2.31, +436.5 points, +$4,365, max drawdown 80.
+Hermes, one position, exits fixed: 43 trades, 31 wins, 12 losses, 72.1% win rate, profit factor 4.44, realized RR 1.72, +961 points, +$9,610, max drawdown 62.
+The unfixed Hermes run booked three clock exits at +222, +90.5, and +42.3. Those are capped at +40. Do not bring the uncapped points back.
+
+Write both cards to /home/hermes/fade_notes.md. Add each new week under this row. A bigger number is not a reject. It is the comparison.
 
 Book data is Databento schema `mbp-1` only. Not `mbp-10`. Not `mbo`.
 `mbp-1` is the best bid and the best ask, price and size.
