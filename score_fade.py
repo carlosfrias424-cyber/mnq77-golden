@@ -127,7 +127,7 @@ def pull_bars(key):
     return bars
 
 
-def score(alerts, bars):
+def score(alerts, bars, tp):
     keys = [k for k in sorted(bars) if session(k)]
     ai = 0
     active = {}
@@ -157,7 +157,7 @@ def score(alerts, bars):
                 hit_stop = b["h"] >= stop_px
                 hit_tp = b["l"] <= tp_px
             if hit_stop or hit_tp:
-                pts, how = (-STOP, "stop") if hit_stop else (TP, "tp")
+                pts, how = (-STOP, "stop") if hit_stop else (tp, "tp")
                 out.append((meta, pts, how))
                 quiet[meta["name"]] = meta["rail"]
                 pos = None
@@ -170,7 +170,7 @@ def score(alerts, bars):
         for name, px in list(quiet.items()):
             if abs(b["c"] - px) >= 20:
                 del quiet[name]
-        if hold is None or pos:
+        if hold is None or not (10 <= dt.hour < 16):
             continue
         best = None
         for name, rail in active.items():
@@ -193,52 +193,44 @@ def score(alerts, bars):
                 if not (b["sell"] > b["buy"] and b["c"] < hold["c"] and b["c"] < rail):
                     continue
             dist = abs(b["c"] - rail)
+            if dist > 15:
+                continue
             if best is None or dist < best[0]:
-                best = (dist, side, name, rail, hold_dt, hold)
+                best = (dist, side, name, rail, hold)
         if best is None:
             continue
-        dist, side, name, rail, hold_dt, hold = best
+        dist, side, name, rail, hold = best
         entry = b["c"]
         if side == "Buy":
-            stop_px, tp_px = entry - STOP, entry + TP
+            stop_px, tp_px = entry - STOP, entry + tp
         else:
-            stop_px, tp_px = entry + STOP, entry - TP
-        meta = {
-            "t": dt, "side": side, "name": name, "rail": rail, "entry": entry, "dist": dist,
-            "hold_sell": hold["sell"], "hold_buy": hold["buy"],
-            "lift_buy": b["buy"], "lift_sell": b["sell"],
-        }
+            stop_px, tp_px = entry + STOP, entry - tp
+        meta = {"t": dt, "side": side, "name": name, "rail": rail, "entry": entry, "dist": dist}
         pos = (side, entry, stop_px, tp_px, meta)
     return out
 
 
-def show(rows):
-    w = l = 0
-    net = 0.0
+def show(title, rows, tp):
+    wins = [p for _, p, _ in rows if p > 0]
+    losses = [p for _, p, _ in rows if p < 0]
+    gp, gl = sum(wins), abs(sum(losses))
+    net = gp - gl
+    wr = (len(wins) / len(rows)) if rows else 0
+    pf = (gp / gl) if gl else 0
+    aw = (gp / len(wins)) if wins else 0
+    al = (gl / len(losses)) if losses else 0
+    rr = (aw / al) if al else 0
+    print(title, flush=True)
+    print(
+        f"TRADES {len(rows)}  W {len(wins)} L {len(losses)}  "
+        f"WR {wr:.1%}  PF {pf:.2f}  RR {rr:.2f}  book {tp/STOP:.2f}R  "
+        f"PNL {net:+.1f} pts  ${net * 10:+.0f}",
+        flush=True,
+    )
     for meta, pts, how in rows:
-        net += pts
-        w += pts > 0
-        l += pts < 0
         print(
             f"{meta['t']:%m-%d %H:%M} {meta['side']:4} {meta['name']}@{meta['rail']:.2f} "
-            f"@{meta['entry']:.2f} {pts:+.1f} {how} dist {meta['dist']:.2f} "
-            f"hold_sell {meta['hold_sell']:.0f} hold_buy {meta['hold_buy']:.0f} "
-            f"lift_buy {meta['lift_buy']:.0f} lift_sell {meta['lift_sell']:.0f}",
-            flush=True,
-        )
-    print(f"TRADES {len(rows)}  W {w}  L {l}  {net:+.1f} pts  ${net * 10:+.0f}", flush=True)
-    for label, pred in (("WINS", lambda p: p > 0), ("LOSSES", lambda p: p < 0)):
-        grp = [m for m, pts, _ in rows if pred(pts)]
-        if not grp:
-            print(label, "none", flush=True)
-            continue
-        def med(key):
-            xs = sorted(m[key] for m in grp)
-            return xs[len(xs) // 2]
-        print(
-            f"{label} n {len(grp)} med hold_sell {med('hold_sell'):.0f} "
-            f"hold_buy {med('hold_buy'):.0f} lift_buy {med('lift_buy'):.0f} "
-            f"lift_sell {med('lift_sell'):.0f} dist {med('dist'):.2f}",
+            f"@{meta['entry']:.2f} {pts:+.1f} {how} dist {meta['dist']:.2f}",
             flush=True,
         )
 
@@ -248,8 +240,10 @@ def main():
     key = os.environ.get("DATABENTO_API_KEY") or os.environ["DATABENTO_KEY"]
     alerts = load_alerts()
     print("RAILS", len(alerts), flush=True)
-    print("RULE hold then next 1m lift. No minimum size. No slope.", flush=True)
-    show(score(alerts, pull_bars(key)))
+    print("WINDOW 10:00-16:00 CT  dist<=15  stop 20", flush=True)
+    bars = pull_bars(key)
+    show("2.0R  target 40", score(alerts, bars, 40.0), 40.0)
+    show("1.5R  target 30", score(alerts, bars, 30.0), 30.0)
 
 
 if __name__ == "__main__":
