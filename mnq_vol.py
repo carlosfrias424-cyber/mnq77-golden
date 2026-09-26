@@ -53,13 +53,12 @@ def sz_of(rec) -> float:
 
 
 def side_delta(rec, sz: float) -> float:
-    """+sz = buy aggressor (lift ask), -sz = sell aggressor (hit bid)."""
+    """+sz = buy aggressor (B, lift ask). -sz = sell aggressor (A, hit bid)."""
     s = str(getattr(rec, "side", "") or "").upper()
-    if s in ("A", "B"):
-        return sz if s == "A" else -sz
-    if s in ("BUY", "BID", "B"):
+    # Databento: B = buy aggressor, A = sell aggressor. N is not counted.
+    if s in ("B", "BUY", "BID"):
         return sz
-    if s in ("SELL", "ASK"):
+    if s in ("A", "SELL", "ASK"):
         return -sz
     return 0.0
 
