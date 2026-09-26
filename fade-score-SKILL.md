@@ -15,7 +15,8 @@ One proposal at a time. Stop after the card. Wait for the user to say yes before
 ## Police
 
 The live log is `/home/hermes/seven.jsonl`. Ignore `fade_score.txt`.
-A legal fill has `event` of `struct40_submit`, `submit` true, and `note` of `fade_hold_lift_10_16`.
+A legal fill has `event` of `struct40_submit`, `submit` true, and `note` of `fade_hold15_10_16`.
+`dist` is the hold-bar close, not the entry.
 For each break, write the time, the poi, the field, and which rule failed.
 If there are no breaks, write "no violations" and the time you checked.
 Do not invent a fill that is not in the file.
@@ -28,7 +29,7 @@ A fill is legal only if all of these are true:
 4. A Buy needs `hold_delta` below 0, `lift_delta` above 0, and `lift_c` above `hold_c`.
 5. A Sell needs `hold_delta` above 0, `lift_delta` below 0, and `lift_c` below `hold_c`.
 6. The order is 5 MNQ, stop 20, target 40, on the demo account.
-7. No second submit under 2 minutes after an earlier submit.
+7. No second submit while a trade is still open. The stop or the target has to trade first.
 8. The same poi again, before price is 20 points away from that rail, is a break.
 9. A missing `dist`, `hold_delta`, `lift_delta`, `hold_c`, or `lift_c` is a break. Do not guess it.
 
