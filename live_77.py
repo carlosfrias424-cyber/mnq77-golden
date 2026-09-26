@@ -2,11 +2,11 @@
 """Fade. Demo only.
 
 10:00–16:00 CT. Stop 20, target 40, 5 MNQZ6.
-Hold bar trades the rail and closes on the hold side.
+Hold bar trades the rail, closes within 15 of it, and closes on the hold side.
 Sellers larger than buyers on a long. Buyers larger than sellers on a short.
-The next 1-minute bar lifts off the rail, and that close is within 15.
+The next 1-minute bar lifts off the rail. That close is the entry, even if it is more than 15 away.
 Databento B is buying, A is selling. Delta is buy size minus sell size.
-One position. A rail stays quiet until price is 20 points away.
+One position until the stop or the target trades. A rail stays quiet until price is 20 points away.
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ SKIP = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "fade_hold_lift_10_16"
+NOTE = "fade_hold15_10_16"
 
 
 def envload():
@@ -139,24 +139,18 @@ def pick(hold, lift, active):
     for name, rail in active.items():
         if not (hold.l <= rail <= hold.h):
             continue
-        if name in SUPPORT or (name in BARE and hold.c > rail):
-            side = "Buy"
-        elif name in RESIST or (name in BARE and hold.c < rail):
-            side = "Sell"
-        else:
+        dist = abs(hold.c - rail)
+        if dist > NEAR:
             continue
-        if side == "Buy":
-            if not (hold.c > rail and hold.delta < 0):
-                continue
+        if hold.c > rail and hold.delta < 0:
             if not (lift.delta > 0 and lift.c > hold.c and lift.c > rail):
                 continue
-        else:
-            if not (hold.c < rail and hold.delta > 0):
-                continue
+            side = "Buy"
+        elif hold.c < rail and hold.delta > 0:
             if not (lift.delta < 0 and lift.c < hold.c and lift.c < rail):
                 continue
-        dist = abs(lift.c - rail)
-        if dist > NEAR:
+            side = "Sell"
+        else:
             continue
         if best is None or dist < best[0]:
             best = (dist, side, name, rail)
@@ -182,6 +176,7 @@ def main():
     prev = None
     seen = None
     quiet = {}
+    pos = None
     last_hb = 0.0
     while True:
         now = time.time()
@@ -199,6 +194,17 @@ def main():
                 if abs(px - rail) >= 20:
                     del quiet[name]
         if hold is None or bar.t0 - hold.t0 != 60:
+            continue
+        if pos is not None:
+            side, entry = pos
+            stop_px = entry - STOP if side == "Buy" else entry + STOP
+            tp_px = entry + TP if side == "Buy" else entry - TP
+            if side == "Buy":
+                done = bar.l <= stop_px or bar.h >= tp_px
+            else:
+                done = bar.h >= stop_px or bar.l <= tp_px
+            if done:
+                pos = None
             continue
         if not in_session(bar.t0 + 60):
             continue
@@ -221,6 +227,7 @@ def main():
         )
         if rc == 0:
             quiet[name] = rail
+            pos = (side, bar.c)
 
 
 if __name__ == "__main__":
