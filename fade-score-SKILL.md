@@ -40,8 +40,14 @@ Baseline: 10:00–16:00 Chicago, entry within 15 points of the rail, stop 20, ta
 Long: the 1-minute bar trades the rail, closes above it, and sell size is larger than buy size.
 The next 1-minute bar has buy size larger than sell size, closes higher, and is still above the rail.
 That close is the entry. A short is the mirror.
-Databento B is buying. A is selling. One position.
+Trades tape: Databento B is buying, A is selling. One position.
 The same rail stays quiet until price is 20 points away.
+
+Book data is Databento schema `mbp-1` only. Not `mbp-10`. Not `mbo`.
+`mbp-1` is the best bid and the best ask, price and size.
+The measurement is bid size reloading while sellers hit a long, or ask size reloading while buyers hit a short.
+Do not use the trades aggressor map on the book. On `mbp-1`, bid and ask are the resting side.
+Pull `mbp-1` only around the scored entries. Do not scan the whole book by hand.
 
 To propose a change:
 
