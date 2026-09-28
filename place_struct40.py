@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""DEMO fade book: 5 MNQ. Stop/TP from env (20 / 40). No 300, no peel, no trail.
+"""DEMO fade book: 5 MNQ. Market entry. Stop and target are prices.
 
-BE is handled by manage_be20.py after fill (+20 → stop to entry).
+Stop is 20 points from the signal price (MNQ_ENTRY), not from the fill.
+Target is 40 points from that same price. The two exit orders are OCO.
 Demo URL only. Qty from MNQ_QTY env, default 5.
 Symbol is hard-locked to MNQZ6 (Dec). MNQU is forbidden.
-
-ATM relative: Buy sl=-20 tp=+40. Sell sl=+20 tp=-40. Never sl=0.
 """
 from __future__ import annotations
 
@@ -24,6 +23,11 @@ TP_PTS = 40.0
 STOP_PTS = 20.0
 QTY = 5
 SYMBOL = "MNQZ6"
+TICK = 0.25
+
+
+def on_tick(px: float) -> float:
+    return round(round(float(px) / TICK) * TICK, 2)
 
 
 def envload() -> None:
@@ -127,24 +131,6 @@ def main() -> int:
     if tp_pts < 0.25:
         tp_pts = TP_PTS
 
-    # Relative ATM from the fill. Shorts MUST be sl=+20 (above), not 0.
-    if side == "Buy":
-        sl, tp = -stop_pts, tp_pts
-    else:
-        sl, tp = stop_pts, -tp_pts
-    brackets = [
-        {"qty": 1, "profitTarget": tp, "stopLoss": sl, "trailingStop": False}
-        for _ in range(qty)
-    ]
-    params = {
-        "entryVersion": {
-            "orderQty": qty,
-            "orderType": "Market",
-            "timeInForce": "Day",
-        },
-        "brackets": brackets,
-    }
-
     name = os.environ.get("TRADOVATE_NAME") or ""
     password = os.environ.get("TRADOVATE_PASSWORD") or ""
     if not name or not password:
@@ -236,35 +222,71 @@ def main() -> int:
             log(event="blocked", reason="already in position — flatten first", net=net)
             return 6
 
+    raw_entry = os.environ.get("MNQ_ENTRY") or ""
+    try:
+        entry = float(raw_entry)
+    except ValueError:
+        entry = 0.0
+    if entry <= 0:
+        log(event="blocked", reason="missing MNQ_ENTRY")
+        return 3
+    entry = on_tick(entry)
+    if side == "Buy":
+        stop_px = on_tick(entry - stop_pts)
+        tp_px = on_tick(entry + tp_pts)
+        exit_side = "Sell"
+    else:
+        stop_px = on_tick(entry + stop_pts)
+        tp_px = on_tick(entry - tp_pts)
+        exit_side = "Buy"
+
     body = {
         "accountId": account_id,
         "accountSpec": spec,
         "symbol": symbol,
         "action": side,
-        "orderStrategyTypeId": 2,
-        "params": json.dumps(params),
+        "orderQty": qty,
+        "orderType": "Market",
+        "timeInForce": "Day",
+        "isAutomated": True,
+        "bracket1": {
+            "action": exit_side,
+            "orderType": "Stop",
+            "stopPrice": stop_px,
+            "orderQty": qty,
+            "timeInForce": "Day",
+            "isAutomated": True,
+        },
+        "bracket2": {
+            "action": exit_side,
+            "orderType": "Limit",
+            "price": tp_px,
+            "orderQty": qty,
+            "timeInForce": "Day",
+            "isAutomated": True,
+        },
     }
-    r = requests.post(base + "/orderStrategy/startorderstrategy", headers=h, json=body, timeout=20)
+    r = requests.post(base + "/order/placeoso", headers=h, json=body, timeout=20)
     try:
         result = r.json()
     except Exception:
         result = {"text": r.text[:400]}
+    failed = r.status_code >= 300 or (isinstance(result, dict) and result.get("failureReason"))
     log(
-        event="struct40_fire",
+        event="oso_fire",
         status=r.status_code,
         side=side,
         symbol=symbol,
         qty=qty,
-        sl=sl,
-        tp=tp,
+        entry=entry,
+        stop_px=stop_px,
+        tp_px=tp_px,
         stop_pts=stop_pts,
         tp_pts=tp_pts,
-        be_pts=20.0,
-        brackets=brackets,
         result=result,
-        note="atm_relative_20_40",
+        note="oso_signal_20_40",
     )
-    return 0 if r.status_code < 300 else 7
+    return 0 if not failed else 7
 
 
 if __name__ == "__main__":
