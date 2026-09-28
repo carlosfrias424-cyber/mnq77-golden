@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -92,15 +93,35 @@ def px_of(rec):
 def pull_bars(key, day):
     start = datetime(day.year, day.month, day.day, 9, 0, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
     end = datetime(day.year, day.month, day.day, 16, 0, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
-    print("PULL", day.isoformat(), flush=True)
-    data = db.Historical(key).timeseries.get_range(
-        dataset="GLBX.MDP3",
-        symbols="MNQZ6",
-        stype_in="raw_symbol",
-        schema="trades",
-        start=start.strftime("%Y-%m-%dT%H:%M:%S"),
-        end=end.strftime("%Y-%m-%dT%H:%M:%S"),
-    )
+    print("PULL", day.isoformat(), "END", end.strftime("%Y-%m-%dT%H:%M:%S"), flush=True)
+    client = db.Historical(key)
+    try:
+        data = client.timeseries.get_range(
+            dataset="GLBX.MDP3",
+            symbols="MNQZ6",
+            stype_in="raw_symbol",
+            schema="trades",
+            start=start.strftime("%Y-%m-%dT%H:%M:%S"),
+            end=end.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+    except Exception as e:
+        msg = str(e)
+        m = re.search(r"available up to '([^']+)'", msg)
+        if m is None or "data_end_after_available_end" not in msg:
+            raise
+        avail = datetime.fromisoformat(m.group(1)).astimezone(ZoneInfo("UTC"))
+        if avail <= start:
+            raise
+        end = min(end, avail)
+        print("PULL_CLAMP", end.strftime("%Y-%m-%dT%H:%M:%S"), flush=True)
+        data = client.timeseries.get_range(
+            dataset="GLBX.MDP3",
+            symbols="MNQZ6",
+            stype_in="raw_symbol",
+            schema="trades",
+            start=start.strftime("%Y-%m-%dT%H:%M:%S"),
+            end=end.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
     bars = {}
     n = 0
     for rec in data:
