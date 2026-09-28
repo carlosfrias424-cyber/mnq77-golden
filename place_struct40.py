@@ -46,6 +46,51 @@ def log(**kw) -> None:
     print(json.dumps(rec, default=str), flush=True)
 
 
+def flatten_mnq(base: str, headers: dict, account_id: int) -> int:
+    pos_raw = requests.get(base + "/position/list", headers=headers, timeout=20).json()
+    positions = pos_raw if isinstance(pos_raw, list) else []
+    targets = []
+    for p in positions:
+        if int(p.get("accountId") or 0) != account_id:
+            continue
+        try:
+            net = float(p.get("netPos") or 0)
+        except (TypeError, ValueError):
+            continue
+        if net == 0:
+            continue
+        cid = int(p.get("contractId") or 0)
+        if cid <= 0:
+            continue
+        item = requests.get(base + "/contract/item", headers=headers, params={"id": cid}, timeout=20).json()
+        name = str((item or {}).get("name") or "").upper()
+        if name != SYMBOL:
+            log(event="flatten_skip", contract=name, net=net)
+            continue
+        targets.append(cid)
+    if not targets:
+        log(event="flat_already", symbol=SYMBOL)
+        return 0
+    rc = 0
+    for cid in targets:
+        body = {
+            "accountId": account_id,
+            "contractId": cid,
+            "admin": False,
+            "isAutomated": True,
+        }
+        r = requests.post(base + "/order/liquidateposition", headers=headers, json=body, timeout=20)
+        try:
+            result = r.json()
+        except Exception:
+            result = {"text": r.text[:400]}
+        failed = r.status_code >= 300 or (isinstance(result, dict) and result.get("failureReason"))
+        log(event="eod_flat", status=r.status_code, contractId=cid, result=result, symbol=SYMBOL)
+        if failed:
+            rc = 7
+    return rc
+
+
 def main() -> int:
     envload()
     if os.environ.get("TRADOVATE_ENV", "demo").lower() != "demo":
@@ -57,7 +102,8 @@ def main() -> int:
         return 2
 
     side = os.environ.get("MNQ_SIDE", "")
-    if side not in ("Buy", "Sell"):
+    flatten = os.environ.get("MNQ_FLATTEN") == "1"
+    if not flatten and side not in ("Buy", "Sell"):
         log(event="blocked", reason="MNQ_SIDE must be Buy or Sell", side=side)
         return 3
 
@@ -152,6 +198,9 @@ def main() -> int:
     symbol = SYMBOL
     if env_sym.startswith("MNQU"):
         log(event="symbol_override", from_env=env_sym, to=symbol)
+
+    if flatten:
+        return flatten_mnq(base, h, account_id)
 
     if os.environ.get("MNQ_PLAIN") == "1":
         body = {

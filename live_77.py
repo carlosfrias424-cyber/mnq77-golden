@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Fade. Demo only.
+"""Fade. Demo only. The +961 card.
 
 10:00–16:00 CT. Stop 20, target 40, 5 MNQZ6.
 Hold bar trades the rail, closes within 15 of it, and closes on the hold side.
 Sellers larger than buyers on a long. Buyers larger than sellers on a short.
 The next 1-minute bar lifts off the rail. That close is the entry, even if it is more than 15 away.
 Databento B is buying, A is selling. Delta is buy size minus sell size.
-One position until the stop or the target trades. A rail stays quiet until price is 20 points away.
+One position. A stop or a target ends it. If neither has traded by 16:00, flatten.
+The rail goes quiet when the trade ends, until a later bar closes 20 points away.
+The next trade can be the bar after the exit. No 120-second lock.
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from zoneinfo import ZoneInfo
 ROOT = Path("/home/administrator/.openclaw/workspace/mnq_hybrid")
 POI = ROOT / "logs/tv_poi.jsonl"
 OUT = ROOT / "logs/seven.jsonl"
-LOCK = ROOT / "logs/submit.lock"
+STATE = ROOT / "logs/fade_state.json"
 PY = ROOT / ".venv/bin/python"
 SUBMIT = ROOT / "apps/tradovate/place_struct40.py"
 sys.path.insert(0, str(ROOT / "apps" / "watcher7"))
@@ -117,21 +119,76 @@ def send_book(side, name, rail, entry, hold, lift):
         "MNQ_STOP_PTS": str(STOP),
         "MNQ_T40": str(TP),
     })
-    LOCK.write_text(json.dumps({
-        "side": side, "poi": f"{name}@{rail:.2f}", "px": rail, "qty": QTY,
-        "entry": round(entry, 2), "stop_pts": STOP, "tp": TP,
-        "symbol": SYMBOL, "ts": time.time(),
-    }))
+    env.pop("MNQ_FLATTEN", None)
     r = subprocess.run(
         [str(PY), str(SUBMIT)], cwd=str(ROOT), env=env,
         capture_output=True, text=True, timeout=60,
     )
-    if r.returncode != 0:
-        try:
-            LOCK.unlink()
-        except OSError:
-            pass
     return r.returncode, (r.stdout or "")[-300:]
+
+
+def send_flat():
+    env = os.environ.copy()
+    env.update({
+        "MNQ_FLATTEN": "1",
+        "TRADOVATE_ENV": "demo",
+        "TRADOVATE_SYMBOL": SYMBOL,
+    })
+    env.pop("MNQ_SIDE", None)
+    r = subprocess.run(
+        [str(PY), str(SUBMIT)], cwd=str(ROOT), env=env,
+        capture_output=True, text=True, timeout=60,
+    )
+    return r.returncode, (r.stdout or "")[-300:]
+
+
+def load_state():
+    if not STATE.exists():
+        return None, {}
+    try:
+        o = json.loads(STATE.read_text())
+    except Exception:
+        return None, {}
+    quiet = {}
+    for k, v in (o.get("quiet") or {}).items():
+        try:
+            quiet[str(k)] = float(v)
+        except (TypeError, ValueError):
+            continue
+    raw = o.get("pos")
+    if not raw:
+        return None, quiet
+    try:
+        pos = (
+            raw["side"], float(raw["entry"]), str(raw["name"]),
+            float(raw["rail"]), float(raw["ts"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None, quiet
+    if pos[0] not in ("Buy", "Sell"):
+        return None, quiet
+    return pos, quiet
+
+
+def save_state(pos, quiet):
+    rec = {"quiet": quiet, "pos": None}
+    if pos is not None:
+        side, entry, name, rail, ts = pos
+        rec["pos"] = {
+            "side": side, "entry": entry, "name": name, "rail": rail, "ts": ts,
+        }
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(rec))
+
+
+def session_over(pos, close_ts):
+    opened = datetime.fromtimestamp(pos[4], TZ)
+    close_dt = datetime.fromtimestamp(close_ts, TZ)
+    if close_dt.date() > opened.date():
+        return True
+    if close_dt.date() < opened.date():
+        return False
+    return close_dt.hour * 60 + close_dt.minute >= SESSION_END
 
 
 def pick(hold, lift, active):
@@ -157,6 +214,12 @@ def pick(hold, lift, active):
     return best
 
 
+def finish(pos, quiet, how):
+    quiet[pos[2]] = pos[3]
+    save_state(None, quiet)
+    return None
+
+
 def main():
     envload()
     os.environ["TRADOVATE_SYMBOL"] = SYMBOL
@@ -167,48 +230,71 @@ def main():
     except Exception as e:
         emit(event="fatal", err=str(e)[:300], note=NOTE)
         return
+    pos, quiet = load_state()
     emit(
         event="seven_start", fire=True, note=NOTE, symbol=SYMBOL,
         book={"qty": QTY, "stop": STOP, "tp": TP, "symbol": SYMBOL},
         session_start="10:00", session_end="16:00", near=NEAR,
         tape="hold_then_lift", vol_src="databento_trades",
+        exit="flat_1600", quiet="bar_close_20", relock="next_bar",
+        open=None if pos is None else pos[0],
     )
+    if pos is not None and session_over(pos, time.time()):
+        rc, out = send_flat()
+        emit(event="eod_flat", how="startup", rc=rc, poi=f"{pos[2]}@{pos[3]:.2f}", out=out, note=NOTE)
+        if rc == 0:
+            pos = finish(pos, quiet, "startup")
     prev = None
     seen = None
-    quiet = {}
-    pos = None
     last_hb = 0.0
     while True:
         now = time.time()
         if now - last_hb > 60:
-            emit(event="heartbeat", note=NOTE, session=in_session(now), quiet=len(quiet))
+            emit(
+                event="heartbeat", note=NOTE, session=in_session(now),
+                quiet=len(quiet), open=None if pos is None else pos[0],
+            )
             last_hb = now
         bar = vol.last_closed_1()
         if bar is None or bar.t0 == seen:
             time.sleep(0.5)
             continue
         hold, prev, seen = prev, bar, bar.t0
-        px = vol.last_px()
-        if px is not None:
-            for name, rail in list(quiet.items()):
-                if abs(px - rail) >= 20:
-                    del quiet[name]
-        if hold is None or bar.t0 - hold.t0 != 60:
-            continue
         if pos is not None:
-            side, entry = pos
+            if bar.t0 + 60 <= pos[4]:
+                continue
+            side, entry, name, rail, _ts = pos
             stop_px = entry - STOP if side == "Buy" else entry + STOP
             tp_px = entry + TP if side == "Buy" else entry - TP
             if side == "Buy":
-                done = bar.l <= stop_px or bar.h >= tp_px
+                hit_stop = bar.l <= stop_px
+                hit_tp = bar.h >= tp_px
             else:
-                done = bar.h >= stop_px or bar.l <= tp_px
-            if done:
-                pos = None
+                hit_stop = bar.h >= stop_px
+                hit_tp = bar.l <= tp_px
+            if hit_stop or hit_tp:
+                how = "stop" if hit_stop else "tp"
+                emit(
+                    event="trade_done", how=how, side=side,
+                    poi=f"{name}@{rail:.2f}", mid=bar.c, note=NOTE,
+                )
+                pos = finish(pos, quiet, how)
+            elif session_over(pos, bar.t0 + 60):
+                rc, out = send_flat()
+                emit(
+                    event="eod_flat", how="16:00", rc=rc, side=side,
+                    poi=f"{name}@{rail:.2f}", mid=bar.c, out=out, note=NOTE,
+                )
+                if rc == 0:
+                    pos = finish(pos, quiet, "eod")
             continue
+        if hold is None or bar.t0 - hold.t0 != 60:
+            continue
+        for name, rail in list(quiet.items()):
+            if abs(bar.c - rail) >= 20:
+                del quiet[name]
+                save_state(pos, quiet)
         if not in_session(bar.t0 + 60):
-            continue
-        if LOCK.exists() and now - LOCK.stat().st_mtime < 120:
             continue
         active = rails_asof(hold.t0 + 60)
         for name in quiet:
@@ -226,8 +312,8 @@ def main():
             hold_c=hold.c, lift_c=bar.c, note=NOTE, out=out,
         )
         if rc == 0:
-            quiet[name] = rail
-            pos = (side, bar.c)
+            pos = (side, bar.c, name, rail, time.time())
+            save_state(pos, quiet)
 
 
 if __name__ == "__main__":
