@@ -91,7 +91,7 @@ def px_of(rec):
 
 def pull_bars(key, day):
     start = datetime(day.year, day.month, day.day, 9, 0, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
-    end = datetime(day.year, day.month, day.day, 16, 5, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
+    end = datetime(day.year, day.month, day.day, 16, 0, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
     print("PULL", day.isoformat(), flush=True)
     data = db.Historical(key).timeseries.get_range(
         dataset="GLBX.MDP3",
