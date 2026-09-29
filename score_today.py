@@ -3,8 +3,8 @@
 
 No orders. Hold close must be within 15. Entry can be farther.
 Stop 20, target 40. One position. Flatten on the 15:59 bar if neither traded.
-A clock exit is capped at +40 and -20. The rail goes quiet when the trade ends,
-until a later bar closes 20 points away.
+A clock exit is capped at +40 and -20.
+After the trade is done, the same rail can fire again. No 20-point lock.
 """
 from __future__ import annotations
 
@@ -153,7 +153,6 @@ def score(alerts, bars, day):
     keys = [k for k in sorted(bars) if k.date() == day and 4 * 60 <= k.hour * 60 + k.minute < 16 * 60]
     ai = 0
     active = {}
-    quiet = {}
     pos = None
     out = []
     for i in range(1, len(keys)):
@@ -177,23 +176,18 @@ def score(alerts, bars, day):
             if hit_stop or hit_tp:
                 pts, how = (-STOP, "stop") if hit_stop else (TP, "tp")
                 out.append((meta, pts, how))
-                quiet[meta["name"]] = meta["rail"]
                 pos = None
             elif dt.hour == 15 and dt.minute >= 59:
                 pts = (b["c"] - entry) if side == "Buy" else (entry - b["c"])
                 pts = min(TP, max(-STOP, pts))
                 out.append((meta, pts, "eod"))
-                quiet[meta["name"]] = meta["rail"]
                 pos = None
             continue
-        for name, px in list(quiet.items()):
-            if abs(b["c"] - px) >= 20:
-                del quiet[name]
         if hold is None or not (10 <= dt.hour < 16):
             continue
         best = None
         for name, rail in active.items():
-            if name in quiet or not (hold["l"] <= rail <= hold["h"]):
+            if not (hold["l"] <= rail <= hold["h"]):
                 continue
             dist = abs(hold["c"] - rail)
             if dist > 15:
