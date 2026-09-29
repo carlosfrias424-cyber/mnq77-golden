@@ -605,7 +605,19 @@ def send_book(side, name, rail, entry, hold, lift):
         [str(PY), str(SUBMIT)], cwd=str(ROOT), env=env,
         capture_output=True, text=True, timeout=60,
     )
-    return r.returncode, (r.stdout or "")[-300:]
+    fill = None
+    for line in reversed((r.stdout or "").splitlines()):
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("fill") is not None:
+            try:
+                fill = float(rec["fill"])
+            except (TypeError, ValueError):
+                fill = None
+            break
+    return r.returncode, (r.stdout or "")[-300:], fill
 
 
 def send_flat():
@@ -791,18 +803,19 @@ def main():
         if hit is None:
             continue
         dist, side, name, rail = hit
-        rc, out = send_book(side, name, rail, bar.c, hold, bar)
+        rc, out, fill = send_book(side, name, rail, bar.c, hold, bar)
+        entry = fill if fill else bar.c
         emit(
             event="struct40_submit" if rc == 0 else "struct40_fail",
             submit=rc == 0, rc=rc, side=side, poi=f"{name}@{rail:.2f}",
-            mid=bar.c, dist=round(dist, 2),
+            mid=entry, dist=round(dist, 2),
             hold_delta=hold.delta, lift_delta=bar.delta,
             hold_c=hold.c, lift_c=bar.c, note=NOTE, out=out,
         )
-        if rc == 0:
-            pos = (side, bar.c, name, rail, time.time())
+        if rc == 0 and fill:
+            pos = (side, entry, name, rail, time.time())
             save_state(pos, quiet)
-            discord_in(side, name, rail, bar.c)
+            discord_in(side, name, rail, entry)
 
 
 if __name__ == "__main__":
