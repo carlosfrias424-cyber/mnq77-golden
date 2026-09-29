@@ -54,7 +54,9 @@ def envload():
             continue
         k, _, v = raw.partition("=")
         k, v = k.strip(), v.strip().strip('"').strip("'")
-        if k and k not in os.environ:
+        if k.lower().startswith("export "):
+            k = k[7:].strip()
+        if k and not (os.environ.get(k) or "").strip():
             os.environ[k] = v
 
 
@@ -116,6 +118,7 @@ def _money(pts):
 def discord_card(headline, color, rows):
     url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
     if not url:
+        emit(event="discord_skip", err="no webhook", headline=headline)
         return
     footer = "PAPER  ·  NOT A PROMISE"
     try:
@@ -123,29 +126,31 @@ def discord_card(headline, color, rows):
     except Exception as e:
         emit(event="discord_card_fail", err=str(e)[:200])
         png = None
+    color_i = (color[0] << 16) | (color[1] << 8) | color[2]
+    payload = {
+        "embeds": [{
+            "author": {"name": "THE ALGO FUND  ·  MAXIMUS"},
+            "title": headline,
+            "description": "\n".join(f"{a}  {b}" for a, b in rows),
+            "color": color_i,
+            "footer": {"text": footer},
+        }]
+    }
     try:
         if png is None:
-            body = json.dumps({
-                "embeds": [{
-                    "author": {"name": "THE ALGO FUND  ·  MAXIMUS"},
-                    "title": headline,
-                    "description": "\n".join(f"{a}  {b}" for a, b in rows),
-                    "color": 0xD4A574,
-                    "footer": {"text": footer},
-                }]
-            }).encode()
+            body = json.dumps(payload).encode()
             req = urllib.request.Request(
                 url, data=body, method="POST",
                 headers={"Content-Type": "application/json", "User-Agent": "maximus"},
             )
         else:
             boundary = "MaximusCard7f3a"
-            payload = b"{}"
+            raw = json.dumps(payload).encode()
             body = b"".join([
                 f"--{boundary}\r\n".encode(),
                 b'Content-Disposition: form-data; name="payload_json"\r\n',
                 b"Content-Type: application/json\r\n\r\n",
-                payload, b"\r\n",
+                raw, b"\r\n",
                 f"--{boundary}\r\n".encode(),
                 b'Content-Disposition: form-data; name="files[0]"; filename="maximus.png"\r\n',
                 b"Content-Type: image/png\r\n\r\n",
@@ -161,8 +166,9 @@ def discord_card(headline, color, rows):
             )
         with urllib.request.urlopen(req, timeout=12) as resp:
             resp.read()
+        emit(event="discord_ok", headline=headline)
     except Exception as e:
-        emit(event="discord_fail", err=str(e)[:200])
+        emit(event="discord_fail", err=str(e)[:200], headline=headline)
 
 
 def discord_in(side, name, rail, entry):
