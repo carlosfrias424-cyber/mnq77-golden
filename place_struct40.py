@@ -43,6 +43,32 @@ def envload() -> None:
             os.environ[k] = v
 
 
+def claim_order() -> bool:
+    path = OUT.parent / "order.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            age = now - path.stat().st_mtime
+        except OSError:
+            age = 0
+        if age < 30:
+            return False
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+    os.write(fd, str(now).encode())
+    os.close(fd)
+    return True
+
+
 def log(**kw) -> None:
     rec = {"ts": int(time.time() * 1000), **kw}
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -236,6 +262,12 @@ def main() -> int:
         return 0 if r.status_code < 300 else 7
 
     if os.environ.get("MNQ_ALLOW_ADD") != "1":
+        if qty != 5:
+            log(event="qty_forced", from_qty=qty, to=5)
+            qty = 5
+        if not claim_order():
+            log(event="blocked", reason="second bot, order already sent", qty=qty)
+            return 6
         pos_raw = requests.get(base + "/position/list", headers=h, timeout=20).json()
         positions = pos_raw if isinstance(pos_raw, list) else []
         net = 0
