@@ -149,6 +149,36 @@ def flatten_mnq(base: str, headers: dict, account_id: int) -> int:
     return rc
 
 
+def report_mnq(base: str, headers: dict, account_id: int) -> int:
+    pos_raw = requests.get(base + "/position/list", headers=headers, timeout=20).json()
+    positions = pos_raw if isinstance(pos_raw, list) else []
+    net = 0
+    px = 0.0
+    for p in positions:
+        if int(p.get("accountId") or 0) != account_id:
+            continue
+        try:
+            n = int(float(p.get("netPos") or 0))
+        except (TypeError, ValueError):
+            continue
+        if n == 0:
+            continue
+        cid = int(p.get("contractId") or 0)
+        if cid <= 0:
+            continue
+        item = requests.get(base + "/contract/item", headers=headers, params={"id": cid}, timeout=20).json()
+        name = str((item or {}).get("name") or "").upper()
+        if name != SYMBOL:
+            continue
+        net += n
+        try:
+            px = float(p.get("netPrice") or 0)
+        except (TypeError, ValueError):
+            px = 0.0
+    log(event="broker_pos", net=net, px=on_tick(px) if px else 0, symbol=SYMBOL)
+    return 0
+
+
 def main() -> int:
     envload()
     if os.environ.get("TRADOVATE_ENV", "demo").lower() != "demo":
@@ -161,7 +191,8 @@ def main() -> int:
 
     side = os.environ.get("MNQ_SIDE", "")
     flatten = os.environ.get("MNQ_FLATTEN") == "1"
-    if not flatten and side not in ("Buy", "Sell"):
+    pos_only = os.environ.get("MNQ_POS") == "1"
+    if not flatten and not pos_only and side not in ("Buy", "Sell"):
         log(event="blocked", reason="MNQ_SIDE must be Buy or Sell", side=side)
         return 3
 
@@ -238,6 +269,9 @@ def main() -> int:
     symbol = SYMBOL
     if env_sym.startswith("MNQU"):
         log(event="symbol_override", from_env=env_sym, to=symbol)
+
+    if pos_only:
+        return report_mnq(base, h, account_id)
 
     if flatten:
         return flatten_mnq(base, h, account_id)
