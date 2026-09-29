@@ -7,7 +7,7 @@ Sellers larger than buyers on a long. Buyers larger than sellers on a short.
 The next 1-minute bar lifts off the rail. That close is the entry, even if it is more than 15 away.
 Databento B is buying, A is selling. Delta is buy size minus sell size.
 One position. A stop or a target ends it. If neither has traded by 16:00, flatten.
-The rail goes quiet when the trade ends, until a later bar closes 20 points away.
+After the trade is done, the same rail can fire again. No 20-point lock.
 The next trade can be the bar after the exit. No 120-second lock.
 """
 from __future__ import annotations
@@ -379,11 +379,6 @@ def load_state():
     except Exception:
         return None, {}
     quiet = {}
-    for k, v in (o.get("quiet") or {}).items():
-        try:
-            quiet[str(k)] = quiet_px(v)
-        except (TypeError, ValueError, KeyError):
-            continue
     raw = o.get("pos")
     if not raw:
         return None, quiet
@@ -444,8 +439,7 @@ def pick(hold, lift, active):
 
 
 def finish(pos, quiet, how):
-    quiet[pos[2]] = pos[3]
-    save_state(None, quiet)
+    save_state(None, {})
     return None
 
 
@@ -467,7 +461,7 @@ def main():
         book={"qty": QTY, "stop": STOP, "tp": TP, "symbol": SYMBOL},
         session_start="10:00", session_end="16:00", near=NEAR,
         tape="hold_then_lift", vol_src="databento_trades",
-        exit="flat_1600", quiet="bar_close_20", relock="next_bar",
+        exit="flat_1600", quiet="off", relock="next_bar",
         open=None if pos is None else pos[0],
         dead={k: v for k, v in quiet.items()},
     )
@@ -531,30 +525,13 @@ def main():
             continue
         if hold is None or bar.t0 - hold.t0 != 60:
             continue
-        for name, rail in list(quiet.items()):
-            dist_q = abs(bar.c - rail)
-            if dist_q >= 20:
-                del quiet[name]
-                save_state(pos, quiet)
-                emit(
-                    event="quiet_free", poi=f"{name}@{rail:.2f}",
-                    mid=bar.c, dist=round(dist_q, 2), note=NOTE,
-                )
         if not in_session(bar.t0 + 60):
             continue
         active = rails_asof(hold.t0 + 60)
-        for name in quiet:
-            active.pop(name, None)
         hit = pick(hold, bar, active)
         if hit is None:
             continue
         dist, side, name, rail = hit
-        if name in quiet:
-            emit(
-                event="rail_dead", side=side, poi=f"{name}@{rail:.2f}",
-                mid=bar.c, dist=round(dist, 2), note=NOTE,
-            )
-            continue
         rc, out = send_book(side, name, rail, bar.c, hold, bar)
         fill = bar.c
         if rc != 0:
