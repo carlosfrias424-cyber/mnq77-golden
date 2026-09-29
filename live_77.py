@@ -65,7 +65,7 @@ def emit(**kw):
 def discord(text):
     url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
     if not url:
-        return
+        return False
     body = json.dumps({"content": text[:1900]}).encode()
     try:
         req = urllib.request.Request(
@@ -74,8 +74,10 @@ def discord(text):
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
             resp.read()
+        return True
     except Exception as e:
         emit(event="discord_fail", err=str(e)[:200])
+        return False
 
 
 def discord_in(side, name, rail, entry):
@@ -105,6 +107,124 @@ def discord_out(side, name, rail, entry, how, px=None):
         f"entry {entry:.2f}\n"
         f"{datetime.now(TZ).strftime('%H:%M')} CT"
     )
+
+
+
+def _state():
+    if not STATE.exists():
+        return {}
+    try:
+        o = json.loads(STATE.read_text())
+    except Exception:
+        return {}
+    return o if isinstance(o, dict) else {}
+
+
+def eod_sent(day):
+    return str(_state().get("eod") or "") == day
+
+
+def mark_eod(day):
+    o = _state()
+    o["eod"] = day
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(o))
+
+
+def day_trades(day):
+    """Closed bot fills for one Chicago date. Stop -20, target +40, flat at the print."""
+    if not OUT.exists():
+        return []
+    open_t = None
+    done = []
+    for ln in OUT.read_text().splitlines():
+        if not ln.strip():
+            continue
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        ts = o.get("ts")
+        if not ts:
+            continue
+        dt = datetime.fromtimestamp(ts / 1000, TZ)
+        ev = o.get("event")
+        if ev == "struct40_submit" and o.get("submit") and dt.date() == day:
+            open_t = o
+            continue
+        if open_t is None or ev not in ("trade_done", "eod_flat"):
+            continue
+        if dt.date() != day and dt.date() != datetime.fromtimestamp(open_t["ts"] / 1000, TZ).date():
+            continue
+        if ev == "eod_flat" and o.get("rc") not in (0, "0"):
+            continue
+        side = open_t.get("side")
+        try:
+            entry = float(open_t.get("mid"))
+        except (TypeError, ValueError):
+            open_t = None
+            continue
+        how = o.get("how") or ""
+        if ev == "trade_done" and how == "tp":
+            pts = TP
+        elif ev == "trade_done" and how == "stop":
+            pts = -STOP
+        else:
+            try:
+                px = float(o.get("mid"))
+            except (TypeError, ValueError):
+                open_t = None
+                continue
+            pts = (px - entry) if side == "Buy" else (entry - px)
+        when = datetime.fromtimestamp(open_t["ts"] / 1000, TZ).strftime("%H:%M")
+        done.append({
+            "when": when,
+            "side": side,
+            "poi": open_t.get("poi"),
+            "entry": entry,
+            "pts": round(float(pts), 1),
+            "how": "target" if how == "tp" else ("stop" if how == "stop" else "flat"),
+        })
+        open_t = None
+    return done
+
+
+def eod_text(day, trades):
+    pts = round(sum(t["pts"] for t in trades), 1)
+    dol = int(round(pts * QTY * 2))
+    w = sum(1 for t in trades if t["pts"] > 0)
+    l = sum(1 for t in trades if t["pts"] < 0)
+    lines = [
+        f"EOD  {day.strftime('%m-%d')}",
+        f"{len(trades)} trade{'s' if len(trades) != 1 else ''}  W {w}  L {l}",
+        f"{pts:+.1f} pts  ${dol:+}",
+    ]
+    for t in trades:
+        lines.append(
+            f"{t['when']} {t['side']} {t['poi']} @{t['entry']:.2f}  {t['pts']:+.1f} {t['how']}"
+        )
+    if not trades:
+        lines.append("no fills")
+    return "\n".join(lines)
+
+
+def maybe_eod(now=None):
+    now = now or datetime.now(TZ)
+    if now.weekday() >= 5:
+        return
+    if now.hour * 60 + now.minute < SESSION_END:
+        return
+    day = now.date()
+    key = day.isoformat()
+    if eod_sent(key):
+        return
+    trades = day_trades(day)
+    text = eod_text(day, trades)
+    if not discord(text):
+        return
+    pts = round(sum(t["pts"] for t in trades), 1)
+    emit(event="eod_pnl", day=key, n=len(trades), pts=pts, note=NOTE)
+    mark_eod(key)
 
 
 def sr_kind(name):
@@ -218,7 +338,9 @@ def load_state():
 
 
 def save_state(pos, quiet):
-    rec = {"quiet": quiet, "pos": None}
+    rec = _state()
+    rec["quiet"] = quiet
+    rec["pos"] = None
     if pos is not None:
         side, entry, name, rail, ts = pos
         rec["pos"] = {
@@ -292,6 +414,7 @@ def main():
         if rc == 0:
             discord_out(pos[0], pos[2], pos[3], pos[1], "startup")
             pos = finish(pos, quiet, "startup")
+    maybe_eod()
     prev = None
     seen = None
     last_hb = 0.0
@@ -345,6 +468,7 @@ def main():
                 del quiet[name]
                 save_state(pos, quiet)
         if not in_session(bar.t0 + 60):
+            maybe_eod()
             continue
         active = rails_asof(hold.t0 + 60)
         for name in quiet:
