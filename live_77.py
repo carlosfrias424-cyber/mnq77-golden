@@ -471,8 +471,8 @@ def main():
         emit(event="fatal", err=str(e)[:300], note=NOTE)
         return
     pos, quiet = load_state()
-    pos = adopt_open(pos, quiet)
     held = single_instance()
+    pos = adopt_open(pos, quiet)
     emit(
         event="seven_start", fire=True, note=NOTE, symbol=SYMBOL,
         book={"qty": QTY, "stop": STOP, "tp": TP, "symbol": SYMBOL},
@@ -508,24 +508,28 @@ def main():
             if bar.t0 + 60 <= pos[4]:
                 continue
             side, entry, name, rail, _ts = pos
-            stop_px = entry - STOP if side == "Buy" else entry + STOP
-            tp_px = entry + TP if side == "Buy" else entry - TP
-            if side == "Buy":
-                hit_stop = bar.l <= stop_px
-                hit_tp = bar.h >= tp_px
-            else:
-                hit_stop = bar.h >= stop_px
-                hit_tp = bar.l <= tp_px
-            if hit_stop or hit_tp:
-                how = "stop" if hit_stop else "tp"
-                rc, out = send_flat()
+            # The broker stop and target own the exit. A bar wick is not a fill.
+            bro = broker_open()
+            net = None if not bro else bro.get("net")
+            try:
+                net_i = int(net) if net is not None else None
+            except (TypeError, ValueError):
+                net_i = None
+            if net_i == 0:
+                last = bar.c
+                pts = (last - entry) if side == "Buy" else (entry - last)
+                if pts >= TP - 0.5:
+                    how = "tp"
+                elif pts <= -(STOP - 0.5):
+                    how = "stop"
+                else:
+                    how = "eod"
                 emit(
-                    event="trade_done", how=how, rc=rc, side=side,
-                    poi=f"{name}@{rail:.2f}", mid=bar.c, out=out, note=NOTE,
+                    event="trade_done", how=how, pts=round(pts, 2), side=side,
+                    poi=f"{name}@{rail:.2f}", mid=last, note=NOTE,
                 )
-                if rc == 0:
-                    discord_out(side, name, rail, entry, how)
-                    pos = finish(pos, quiet, how)
+                discord_out(side, name, rail, entry, how, None if how != "eod" else last)
+                pos = finish(pos, quiet, how)
             elif session_over(pos, bar.t0 + 60):
                 rc, out = send_flat()
                 emit(
