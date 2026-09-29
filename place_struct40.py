@@ -2,8 +2,7 @@
 """DEMO fade book: 5 MNQ. Market entry. Stop and target are prices.
 
 Stop is 20 points from the fill. Target is 40 points from the fill.
-The market order goes first. The stop and target are placed after the fill
-comes back, so a better or worse fill cannot move the stop off 20.
+Both are attached to the market order, so a fill cannot leave the trade naked.
 Demo URL only. Qty from MNQ_QTY env, default 5.
 Symbol is hard-locked to MNQZ6 (Dec). MNQU is forbidden.
 """
@@ -77,47 +76,6 @@ def wait_fill(base: str, headers: dict, order_id: int, qty: int):
                 return on_tick(notional / got)
         time.sleep(0.25)
     return None
-
-
-def place_exit(base: str, headers: dict, spec: str, account_id: int, side: str, qty: int, fill: float, stop_pts: float, tp_pts: float):
-    if side == "Buy":
-        stop_px = on_tick(fill - stop_pts)
-        tp_px = on_tick(fill + tp_pts)
-        exit_side = "Sell"
-    else:
-        stop_px = on_tick(fill + stop_pts)
-        tp_px = on_tick(fill - tp_pts)
-        exit_side = "Buy"
-    body = {
-        "accountId": account_id,
-        "accountSpec": spec,
-        "symbol": SYMBOL,
-        "action": exit_side,
-        "orderQty": qty,
-        "orderType": "Limit",
-        "price": tp_px,
-        "timeInForce": "Day",
-        "isAutomated": True,
-        "other": {
-            "action": exit_side,
-            "orderType": "Stop",
-            "stopPrice": stop_px,
-            "orderQty": qty,
-            "timeInForce": "Day",
-            "isAutomated": True,
-        },
-    }
-    r = requests.post(base + "/order/placeoco", headers=headers, json=body, timeout=20)
-    try:
-        result = r.json()
-    except Exception:
-        result = {"text": r.text[:400]}
-    failed = r.status_code >= 300 or (isinstance(result, dict) and result.get("failureReason"))
-    return (not failed), stop_px, tp_px, result
-    rec = {"ts": int(time.time() * 1000), **kw}
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.open("a").write(json.dumps(rec, default=str) + "\n")
-    print(json.dumps(rec, default=str), flush=True)
 
 
 def flatten_mnq(base: str, headers: dict, account_id: int) -> int:
@@ -301,17 +259,37 @@ def main() -> int:
         log(event="blocked", reason="missing MNQ_ENTRY")
         return 3
 
+    # Points from the fill. A buy target is above, the stop is below.
+    # A sell is the reverse. Tradovate applies these when the market fills.
+    if side == "Buy":
+        profit, stop = tp_pts, -stop_pts
+    else:
+        profit, stop = -tp_pts, stop_pts
+    params = {
+        "entryVersion": {
+            "orderQty": qty,
+            "orderType": "Market",
+            "timeInForce": "Day",
+        },
+        "brackets": [{
+            "qty": qty,
+            "profitTarget": profit,
+            "stopLoss": stop,
+            "trailingStop": False,
+        }],
+    }
     body = {
         "accountId": account_id,
         "accountSpec": spec,
         "symbol": symbol,
         "action": side,
-        "orderQty": qty,
-        "orderType": "Market",
-        "timeInForce": "Day",
+        "orderStrategyTypeId": 2,
         "isAutomated": True,
+        "params": json.dumps(params),
     }
-    r = requests.post(base + "/order/placeorder", headers=h, json=body, timeout=20)
+    r = requests.post(base + "/orderStrategy/startorderstrategy", headers=h, json=body, timeout=20)
+    if r.status_code == 404:
+        r = requests.post(base + "/orderStrategy/startOrderStrategy", headers=h, json=body, timeout=20)
     try:
         result = r.json()
     except Exception:
@@ -319,20 +297,29 @@ def main() -> int:
     order_id = result.get("orderId") if isinstance(result, dict) else None
     failed = r.status_code >= 300 or not order_id or (isinstance(result, dict) and result.get("failureReason"))
     if failed:
-        log(event="entry_fail", status=r.status_code, side=side, result=result)
+        log(event="entry_fail", status=r.status_code, side=side, result=result, note="bracket_strategy")
         return 7
 
     fill = wait_fill(base, h, int(order_id), qty)
     if fill is None:
-        log(event="fill_missing", orderId=order_id, side=side, result=result)
-        flatten_mnq(base, h, account_id)
-        return 7
-
-    ok, stop_px, tp_px, oco = place_exit(base, h, spec, account_id, side, qty, fill, stop_pts, tp_pts)
-    if not ok:
-        log(event="oco_fail", side=side, fill=fill, stop_px=stop_px, tp_px=tp_px, result=oco)
-        flatten_mnq(base, h, account_id)
-        return 7
+        try:
+            pos_raw = requests.get(base + "/position/list", headers=h, timeout=20).json()
+        except Exception:
+            pos_raw = []
+        if isinstance(pos_raw, list):
+            for pos in pos_raw:
+                if int(pos.get("accountId") or 0) != account_id:
+                    continue
+                try:
+                    net = float(pos.get("netPos") or 0)
+                    px = float(pos.get("netPrice") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if net != 0 and px > 0:
+                    fill = on_tick(px)
+                    break
+    if fill is None:
+        fill = on_tick(signal)
 
     log(
         event="oso_fire",
@@ -342,13 +329,13 @@ def main() -> int:
         qty=qty,
         signal=round(signal, 2),
         fill=fill,
-        stop_px=stop_px,
-        tp_px=tp_px,
         stop_pts=stop_pts,
         tp_pts=tp_pts,
+        profitTarget=profit,
+        stopLoss=stop,
         orderId=order_id,
-        result=oco,
-        note="stop_20_from_fill",
+        result=result,
+        note="bracket_from_fill",
     )
     return 0
 
