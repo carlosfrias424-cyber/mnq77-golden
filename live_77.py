@@ -125,45 +125,27 @@ def discord_card(headline, color, rows):
         png = alert_png(headline, color, rows, footer)
     except Exception as e:
         emit(event="discord_card_fail", err=str(e)[:200])
-        png = None
-    color_i = (color[0] << 16) | (color[1] << 8) | color[2]
-    payload = {
-        "embeds": [{
-            "author": {"name": "THE ALGO FUND  ·  MAXIMUS"},
-            "title": headline,
-            "description": "\n".join(f"{a}  {b}" for a, b in rows),
-            "color": color_i,
-            "footer": {"text": footer},
-        }]
-    }
+        return
+    boundary = "MaximusCard7f3a"
+    body = b"".join([
+        f"--{boundary}\r\n".encode(),
+        b'Content-Disposition: form-data; name="payload_json"\r\n',
+        b"Content-Type: application/json\r\n\r\n",
+        b"{}\r\n",
+        f"--{boundary}\r\n".encode(),
+        b'Content-Disposition: form-data; name="files[0]"; filename="maximus.png"\r\n',
+        b"Content-Type: image/png\r\n\r\n",
+        png, b"\r\n",
+        f"--{boundary}--\r\n".encode(),
+    ])
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": "maximus",
+        },
+    )
     try:
-        if png is None:
-            body = json.dumps(payload).encode()
-            req = urllib.request.Request(
-                url, data=body, method="POST",
-                headers={"Content-Type": "application/json", "User-Agent": "maximus"},
-            )
-        else:
-            boundary = "MaximusCard7f3a"
-            raw = json.dumps(payload).encode()
-            body = b"".join([
-                f"--{boundary}\r\n".encode(),
-                b'Content-Disposition: form-data; name="payload_json"\r\n',
-                b"Content-Type: application/json\r\n\r\n",
-                raw, b"\r\n",
-                f"--{boundary}\r\n".encode(),
-                b'Content-Disposition: form-data; name="files[0]"; filename="maximus.png"\r\n',
-                b"Content-Type: image/png\r\n\r\n",
-                png, b"\r\n",
-                f"--{boundary}--\r\n".encode(),
-            ])
-            req = urllib.request.Request(
-                url, data=body, method="POST",
-                headers={
-                    "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    "User-Agent": "maximus",
-                },
-            )
         with urllib.request.urlopen(req, timeout=12) as resp:
             resp.read()
         emit(event="discord_ok", headline=headline)
