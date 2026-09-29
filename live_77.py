@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -58,6 +59,52 @@ def emit(**kw):
     rec = {"ts": int(time.time() * 1000), **kw}
     OUT.open("a").write(json.dumps(rec, default=str) + "\n")
     print(json.dumps(rec, default=str), flush=True)
+
+
+
+def discord(text):
+    url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
+    if not url:
+        return
+    body = json.dumps({"content": text[:1900]}).encode()
+    try:
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": "maximus-fade"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+    except Exception as e:
+        emit(event="discord_fail", err=str(e)[:200])
+
+
+def discord_in(side, name, rail, entry):
+    discord(
+        f"IN  {side}  {QTY} {SYMBOL}\n"
+        f"{name} @ {rail:.2f}\n"
+        f"fill {entry:.2f}\n"
+        f"{datetime.now(TZ).strftime('%H:%M')} CT"
+    )
+
+
+def discord_out(side, name, rail, entry, how, px=None):
+    if how == "stop":
+        label, pts = "stop", -STOP
+    elif how == "tp":
+        label, pts = "target", TP
+    elif how == "eod":
+        label = "flat 16:00"
+        pts = None if px is None else ((px - entry) if side == "Buy" else (entry - px))
+    else:
+        label = how
+        pts = None if px is None else ((px - entry) if side == "Buy" else (entry - px))
+    extra = "" if pts is None else f"  {pts:+.1f}"
+    discord(
+        f"OUT  {side}  {label}{extra}\n"
+        f"{name} @ {rail:.2f}\n"
+        f"entry {entry:.2f}\n"
+        f"{datetime.now(TZ).strftime('%H:%M')} CT"
+    )
 
 
 def sr_kind(name):
@@ -243,6 +290,7 @@ def main():
         rc, out = send_flat()
         emit(event="eod_flat", how="startup", rc=rc, poi=f"{pos[2]}@{pos[3]:.2f}", out=out, note=NOTE)
         if rc == 0:
+            discord_out(pos[0], pos[2], pos[3], pos[1], "startup")
             pos = finish(pos, quiet, "startup")
     prev = None
     seen = None
@@ -278,6 +326,7 @@ def main():
                     event="trade_done", how=how, side=side,
                     poi=f"{name}@{rail:.2f}", mid=bar.c, note=NOTE,
                 )
+                discord_out(side, name, rail, entry, how)
                 pos = finish(pos, quiet, how)
             elif session_over(pos, bar.t0 + 60):
                 rc, out = send_flat()
@@ -286,6 +335,7 @@ def main():
                     poi=f"{name}@{rail:.2f}", mid=bar.c, out=out, note=NOTE,
                 )
                 if rc == 0:
+                    discord_out(side, name, rail, entry, "eod", bar.c)
                     pos = finish(pos, quiet, "eod")
             continue
         if hold is None or bar.t0 - hold.t0 != 60:
@@ -314,6 +364,7 @@ def main():
         if rc == 0:
             pos = (side, bar.c, name, rail, time.time())
             save_state(pos, quiet)
+            discord_in(side, name, rail, bar.c)
 
 
 if __name__ == "__main__":
