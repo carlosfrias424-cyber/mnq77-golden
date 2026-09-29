@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -304,6 +305,117 @@ def day_trades(day):
     return pair_fills(chosen)
 
 
+def discord_file(path, text=""):
+    url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
+    if not url or not path or not Path(path).exists():
+        return False
+    boundary = uuid.uuid4().hex
+    payload = json.dumps({"content": text[:1900]}).encode() if text else b"{}"
+    png = Path(path).read_bytes()
+    body = b""
+    for name, raw, filename, ctype in (
+        ("payload_json", payload, None, "application/json"),
+        ("files[0]", png, "maximus-eod.png", "image/png"),
+    ):
+        disp = f'Content-Disposition: form-data; name="{name}"'
+        if filename:
+            disp += f'; filename="{filename}"'
+        body += f"--{boundary}\r\n{disp}\r\nContent-Type: {ctype}\r\n\r\n".encode()
+        body += raw + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    try:
+        req = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": "maximus-fade",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
+        return True
+    except Exception as e:
+        emit(event="discord_fail", err=str(e)[:200])
+        return False
+
+
+def _font(kind, size):
+    from PIL import ImageFont
+    picks = {
+        "sans": (
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ),
+        "bold": (
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ),
+        "mono": (
+            "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        ),
+    }
+    for path in picks[kind]:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default()
+
+
+def render_eod_card(path, day, trades, tag):
+    from PIL import Image, ImageDraw
+    wins = [t for t in trades if t["pts"] > 0]
+    losses = [t for t in trades if t["pts"] < 0]
+    pts = round(sum(t["pts"] for t in trades), 1)
+    gross_w = sum(t["pts"] for t in wins)
+    gross_l = abs(sum(t["pts"] for t in losses))
+    pf = None if gross_l == 0 else gross_w / gross_l
+    wr = None if not trades else len(wins) / len(trades)
+    rr = None
+    if wins and losses:
+        rr = (gross_w / len(wins)) / (gross_l / len(losses))
+    qtys = {t.get("qty") for t in trades}
+    lot = str(next(iter(qtys))) if len(qtys) == 1 else "—"
+    dol = int(round(sum(t["pts"] * t.get("qty", QTY) * 2 for t in trades)))
+    bg, surface = (14, 17, 16), (23, 28, 26)
+    fg, muted, faint = (232, 235, 228), (139, 147, 140), (92, 100, 94)
+    gold, border = (212, 165, 116), (42, 49, 46)
+    pts_color = (61, 154, 106) if pts >= 0 else (196, 92, 74)
+    W, H = 1400, 820
+    img = Image.new("RGB", (W, H), bg)
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, W, 6), fill=gold)
+    d.text((72, 48), "THE ALGO FUND", font=_font("mono", 22), fill=gold)
+    mark = "MAXIMUS"
+    mf = _font("sans", 28)
+    d.text((W - 72 - d.textlength(mark, font=mf), 44), mark, font=mf, fill=fg)
+    d.line((72, 108, W - 72, 108), fill=border, width=2)
+    d.text((72, 140), "MNQ", font=_font("bold", 92), fill=fg)
+    d.text((72, 248), "INDEX", font=_font("mono", 22), fill=muted)
+    pts_s = f"{pts:+.1f}"
+    pfnt = _font("bold", 120)
+    d.text((W - 72 - d.textlength(pts_s, font=pfnt), 132), pts_s, font=pfnt, fill=pts_color)
+    lab = "POINTS"
+    d.text((W - 72 - d.textlength(lab, font=_font("mono", 22)), 268), lab, font=_font("mono", 22), fill=muted)
+    tiles = [
+        ("LOT SIZE", lot),
+        ("RR", "—" if rr is None else f"{rr:.1f}"),
+        ("PF", "—" if pf is None else f"{pf:.2f}"),
+        ("WR", "—" if wr is None else f"{wr * 100:.0f}%"),
+    ]
+    gap, y0, th = 18, 360, 210
+    tw = (W - 144 - gap * 3) / 4
+    for i, (k, v) in enumerate(tiles):
+        x = 72 + i * (tw + gap)
+        d.rounded_rectangle((x, y0, x + tw, y0 + th), radius=22, fill=surface, outline=border, width=2)
+        d.text((x + 28, y0 + 28), k, font=_font("mono", 20), fill=gold)
+        d.text((x + 28, y0 + 78), v, font=_font("bold", 72), fill=fg)
+    foot = f"{day.strftime('%m-%d')}   ·   {len(wins)}W  {len(losses)}L   ·   ${dol:+}   ·   {tag}"
+    d.text((72, H - 78), foot, font=_font("mono", 22), fill=faint)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "PNG")
+    return path
+
+
 def eod_text(day, trades):
     pts = round(sum(t["pts"] for t in trades), 1)
     dol = int(round(sum(t["pts"] * t["qty"] * 2 for t in trades)))
@@ -342,7 +454,14 @@ def maybe_eod(now=None):
         emit(event="eod_pnl_fail", day=key, err=str(e)[:200], note=NOTE)
         return
     text = eod_text(day, trades)
-    if not discord(text):
+    card = ROOT / "logs" / f"eod_{key}.png"
+    try:
+        render_eod_card(card, day, trades, "FILLS")
+    except Exception as e:
+        emit(event="eod_card_fail", err=str(e)[:200], note=NOTE)
+        card = None
+    sent = discord_file(card) if card else False
+    if not sent and not discord(text):
         return
     pts = round(sum(t["pts"] for t in trades), 1)
     emit(event="eod_pnl", day=key, n=len(trades), pts=pts, note=NOTE, src="tradovate_fills")
