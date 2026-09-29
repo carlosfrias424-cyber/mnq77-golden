@@ -30,7 +30,7 @@ A fill is legal only if all of these are true:
 5. A Sell needs `hold_delta` above 0, `lift_delta` below 0, and `lift_c` below `hold_c`.
 6. The order is 5 MNQ, stop 20, target 40, on the demo account.
 7. No second submit while a trade is still open. The stop or the target has to trade first.
-8. The same poi again, before price is 20 points away from that rail, is a break.
+8. After that trade is done, the same poi may fire again. A 20-point lock is not a rule.
 9. A missing `dist`, `hold_delta`, `lift_delta`, `hold_c`, or `lift_c` is a break. Do not guess it.
 
 ## Research
@@ -42,7 +42,7 @@ Long: the 1-minute bar trades the rail, closes above it, and sell size is larger
 The next 1-minute bar has buy size larger than sell size, closes higher, and is still above the rail.
 That close is the entry. A short is the mirror.
 Trades tape: Databento B is buying, A is selling. One position.
-The same rail stays quiet until price is 20 points away.
+After the trade is done, the same rail can fire again.
 
 ## Weekly cards
 
@@ -80,4 +80,3 @@ To propose a change:
 5. If it is better on both, write the one rule in one sentence and stop.
 6. No idea is banned. A past reject can be tested again.
 7. Do not deploy. The user decides if a proposal becomes the live rule.
-
