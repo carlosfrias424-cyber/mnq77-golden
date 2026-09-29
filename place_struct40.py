@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """DEMO fade book: 5 MNQ. Market entry. Stop and target are prices.
 
-Stop is 20 points from the signal price (MNQ_ENTRY), not from the fill.
-Target is 40 points from that same price. The two exit orders are OCO.
+Stop is 20 points from the fill. Target is 40 points from the fill.
+The market order goes first. The stop and target are placed after the fill
+comes back, so a better or worse fill cannot move the stop off 20.
 Demo URL only. Qty from MNQ_QTY env, default 5.
 Symbol is hard-locked to MNQZ6 (Dec). MNQU is forbidden.
 """
@@ -44,6 +45,75 @@ def envload() -> None:
 
 
 def log(**kw) -> None:
+    rec = {"ts": int(time.time() * 1000), **kw}
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.open("a").write(json.dumps(rec, default=str) + "\n")
+    print(json.dumps(rec, default=str), flush=True)
+
+
+def wait_fill(base: str, headers: dict, order_id: int, qty: int):
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        try:
+            fills = requests.get(
+                base + "/fill/deps", headers=headers,
+                params={"masterid": order_id}, timeout=10,
+            ).json()
+        except Exception:
+            fills = []
+        if isinstance(fills, list) and fills:
+            got = 0
+            notional = 0.0
+            for f in fills:
+                try:
+                    q = int(f.get("qty") or 0)
+                    px = float(f.get("price"))
+                except (TypeError, ValueError):
+                    continue
+                if q > 0:
+                    got += q
+                    notional += px * q
+            if got >= qty and notional > 0:
+                return on_tick(notional / got)
+        time.sleep(0.25)
+    return None
+
+
+def place_exit(base: str, headers: dict, spec: str, account_id: int, side: str, qty: int, fill: float, stop_pts: float, tp_pts: float):
+    if side == "Buy":
+        stop_px = on_tick(fill - stop_pts)
+        tp_px = on_tick(fill + tp_pts)
+        exit_side = "Sell"
+    else:
+        stop_px = on_tick(fill + stop_pts)
+        tp_px = on_tick(fill - tp_pts)
+        exit_side = "Buy"
+    body = {
+        "accountId": account_id,
+        "accountSpec": spec,
+        "symbol": SYMBOL,
+        "action": exit_side,
+        "orderQty": qty,
+        "orderType": "Limit",
+        "price": tp_px,
+        "timeInForce": "Day",
+        "isAutomated": True,
+        "other": {
+            "action": exit_side,
+            "orderType": "Stop",
+            "stopPrice": stop_px,
+            "orderQty": qty,
+            "timeInForce": "Day",
+            "isAutomated": True,
+        },
+    }
+    r = requests.post(base + "/order/placeoco", headers=headers, json=body, timeout=20)
+    try:
+        result = r.json()
+    except Exception:
+        result = {"text": r.text[:400]}
+    failed = r.status_code >= 300 or (isinstance(result, dict) and result.get("failureReason"))
+    return (not failed), stop_px, tp_px, result
     rec = {"ts": int(time.time() * 1000), **kw}
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.open("a").write(json.dumps(rec, default=str) + "\n")
@@ -224,21 +294,12 @@ def main() -> int:
 
     raw_entry = os.environ.get("MNQ_ENTRY") or ""
     try:
-        entry = float(raw_entry)
+        signal = float(raw_entry)
     except ValueError:
-        entry = 0.0
-    if entry <= 0:
+        signal = 0.0
+    if signal <= 0:
         log(event="blocked", reason="missing MNQ_ENTRY")
         return 3
-    entry = on_tick(entry)
-    if side == "Buy":
-        stop_px = on_tick(entry - stop_pts)
-        tp_px = on_tick(entry + tp_pts)
-        exit_side = "Sell"
-    else:
-        stop_px = on_tick(entry + stop_pts)
-        tp_px = on_tick(entry - tp_pts)
-        exit_side = "Buy"
 
     body = {
         "accountId": account_id,
@@ -249,45 +310,47 @@ def main() -> int:
         "orderType": "Market",
         "timeInForce": "Day",
         "isAutomated": True,
-        "bracket1": {
-            "action": exit_side,
-            "orderType": "Stop",
-            "stopPrice": stop_px,
-            "orderQty": qty,
-            "timeInForce": "Day",
-            "isAutomated": True,
-        },
-        "bracket2": {
-            "action": exit_side,
-            "orderType": "Limit",
-            "price": tp_px,
-            "orderQty": qty,
-            "timeInForce": "Day",
-            "isAutomated": True,
-        },
     }
-    r = requests.post(base + "/order/placeoso", headers=h, json=body, timeout=20)
+    r = requests.post(base + "/order/placeorder", headers=h, json=body, timeout=20)
     try:
         result = r.json()
     except Exception:
         result = {"text": r.text[:400]}
-    failed = r.status_code >= 300 or (isinstance(result, dict) and result.get("failureReason"))
+    order_id = result.get("orderId") if isinstance(result, dict) else None
+    failed = r.status_code >= 300 or not order_id or (isinstance(result, dict) and result.get("failureReason"))
+    if failed:
+        log(event="entry_fail", status=r.status_code, side=side, result=result)
+        return 7
+
+    fill = wait_fill(base, h, int(order_id), qty)
+    if fill is None:
+        log(event="fill_missing", orderId=order_id, side=side, result=result)
+        flatten_mnq(base, h, account_id)
+        return 7
+
+    ok, stop_px, tp_px, oco = place_exit(base, h, spec, account_id, side, qty, fill, stop_pts, tp_pts)
+    if not ok:
+        log(event="oco_fail", side=side, fill=fill, stop_px=stop_px, tp_px=tp_px, result=oco)
+        flatten_mnq(base, h, account_id)
+        return 7
+
     log(
         event="oso_fire",
         status=r.status_code,
         side=side,
         symbol=symbol,
         qty=qty,
-        entry=entry,
+        signal=round(signal, 2),
+        fill=fill,
         stop_px=stop_px,
         tp_px=tp_px,
         stop_pts=stop_pts,
         tp_pts=tp_pts,
-        result=result,
-        note="oso_signal_20_40",
+        orderId=order_id,
+        result=oco,
+        note="stop_20_from_fill",
     )
-    return 0 if not failed else 7
-
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())
