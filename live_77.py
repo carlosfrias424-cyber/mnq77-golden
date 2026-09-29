@@ -333,6 +333,7 @@ def adopt_open(pos, quiet):
     except (TypeError, ValueError):
         entry = 0.0
     if OUT.exists():
+        cutoff = time.time() - 300
         for ln in OUT.read_text().splitlines()[::-1]:
             if not ln.strip():
                 continue
@@ -340,7 +341,13 @@ def adopt_open(pos, quiet):
                 o = json.loads(ln)
             except Exception:
                 continue
-            if o.get("event") != "struct40_submit" or not o.get("submit"):
+            try:
+                ts = float(o.get("ts") or 0) / 1000.0
+            except (TypeError, ValueError):
+                continue
+            if ts and ts < cutoff:
+                break
+            if o.get("event") not in ("struct40_submit", "struct40_fail"):
                 continue
             if o.get("side") != side:
                 continue
@@ -567,17 +574,34 @@ def main():
             )
             continue
         rc, out = send_book(side, name, rail, bar.c, hold, bar)
+        fill = bar.c
+        if rc != 0:
+            bro = broker_open()
+            try:
+                net_i = int(bro.get("net") or 0) if bro else 0
+                bro_px = float(bro.get("px") or 0) if bro else 0
+            except (TypeError, ValueError):
+                net_i, bro_px = 0, 0
+            want = 1 if side == "Buy" else -1
+            if net_i * want > 0:
+                rc = 0
+                if bro_px > 0:
+                    fill = bro_px
+                emit(
+                    event="filled_on_fail", side=side, poi=f"{name}@{rail:.2f}",
+                    mid=fill, net=net_i, note=NOTE, out=out,
+                )
         emit(
             event="struct40_submit" if rc == 0 else "struct40_fail",
             submit=rc == 0, rc=rc, side=side, poi=f"{name}@{rail:.2f}",
-            mid=bar.c, dist=round(dist, 2),
+            mid=fill, dist=round(dist, 2),
             hold_delta=hold.delta, lift_delta=bar.delta,
             hold_c=hold.c, lift_c=bar.c, note=NOTE, out=out,
         )
         if rc == 0:
-            pos = (side, bar.c, name, rail, time.time())
+            pos = (side, fill, name, rail, time.time())
             save_state(pos, quiet)
-            discord_in(side, name, rail, bar.c)
+            discord_in(side, name, rail, fill)
 
 
 if __name__ == "__main__":
