@@ -66,6 +66,19 @@ def emit(**kw):
 
 
 
+def _once(key):
+    safe = "".join(c if c.isalnum() else "_" for c in key)[:140]
+    path = ROOT / "logs" / "sent" / safe
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    os.write(fd, key.encode())
+    os.close(fd)
+    return True
+
+
 def discord(text):
     url = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
     if not url:
@@ -120,6 +133,8 @@ def _money(pts, qty=None):
 
 
 def discord_in(side, name, rail, entry):
+    if not _once(f"in|{side}|{name}|{rail:.2f}|{entry:.2f}"):
+        return
     color = (61, 154, 106) if side == "Buy" else (196, 92, 74)
     path = ROOT / "logs" / "alert.png"
     try:
@@ -143,6 +158,8 @@ def discord_in(side, name, rail, entry):
 
 
 def discord_out(side, name, rail, entry, how, px=None):
+    if not _once(f"out|{how}|{side}|{name}|{rail:.2f}|{entry:.2f}"):
+        return
     if how == "stop":
         headline, color, pts = "STOP", (196, 92, 74), -STOP
     elif how == "tp":
@@ -394,7 +411,7 @@ def discord_file(path, text=""):
                 "User-Agent": "maximus-fade",
             },
         )
-        opener = urllib.request.build_opener(_NoRedirect)
+        opener = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
         with opener.open(req, timeout=20) as resp:
             resp.read()
         return True
