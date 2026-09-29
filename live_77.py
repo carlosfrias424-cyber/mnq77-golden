@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime
@@ -94,7 +95,7 @@ def _paste_mark(img, xy=(72, 64), size=88):
 
 def _trade_card(path, headline, color, rows):
     from PIL import Image, ImageDraw
-    W = H = 1080
+    W, H = 1080, 760
     bg, gold, fg, muted, line = (14, 17, 16), (212, 165, 116), (232, 235, 228), (139, 147, 140), (42, 49, 46)
     img = Image.new("RGB", (W, H), bg)
     _paste_mark(img)
@@ -108,8 +109,6 @@ def _trade_card(path, headline, color, rows):
         d.text((W - 72, y - 4), value, font=_font("bold", 36), fill=fg, anchor="ra")
         y += 78
         d.rectangle((72, y - 18, W - 72, y - 16), fill=line)
-    d.text((72, H - 88), "PAPER  ·  NOT A PROMISE", font=_font("mono", 20), fill=muted)
-    d.rectangle((72, H - 48, 240, H - 44), fill=gold)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     img.save(path, "PNG")
     return path
@@ -374,7 +373,7 @@ def discord_file(path, text=""):
     body = b""
     for name, raw, filename, ctype in (
         ("payload_json", payload, None, "application/json"),
-        ("files[0]", png, "maximus-eod.png", "image/png"),
+        ("files[0]", png, "maximus.png", "image/png"),
     ):
         disp = f'Content-Disposition: form-data; name="{name}"'
         if filename:
@@ -382,6 +381,11 @@ def discord_file(path, text=""):
         body += f"--{boundary}\r\n{disp}\r\nContent-Type: {ctype}\r\n\r\n".encode()
         body += raw + b"\r\n"
     body += f"--{boundary}--\r\n".encode()
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
     try:
         req = urllib.request.Request(
             url, data=body, method="POST",
@@ -390,9 +394,16 @@ def discord_file(path, text=""):
                 "User-Agent": "maximus-fade",
             },
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        opener = urllib.request.build_opener(_NoRedirect)
+        with opener.open(req, timeout=20) as resp:
             resp.read()
         return True
+    except urllib.error.HTTPError as e:
+        # A redirect means Discord already took the file. Do not post it again.
+        if e.code in (204, 301, 302, 303, 307, 308):
+            return True
+        emit(event="discord_fail", err=str(e)[:200])
+        return False
     except Exception as e:
         emit(event="discord_fail", err=str(e)[:200])
         return False
@@ -473,8 +484,6 @@ def render_eod_card(path, day, trades, tag):
         d.text((W - 72, y - 4), value, font=_font("bold", 36), fill=fg, anchor="ra")
         y += 90
         d.rectangle((72, y - 22, W - 72, y - 20), fill=line)
-    d.text((72, H - 88), "PAPER FILLS  ·  NOT A PROMISE", font=_font("mono", 20), fill=muted)
-    d.rectangle((72, H - 48, 240, H - 44), fill=gold)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     img.save(path, "PNG")
     return path
