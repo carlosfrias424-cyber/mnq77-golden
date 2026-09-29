@@ -131,67 +131,182 @@ def mark_eod(day):
     STATE.write_text(json.dumps(o))
 
 
-def day_trades(day):
-    """Closed bot fills for one Chicago date. Stop -20, target +40, flat at the print."""
-    if not OUT.exists():
-        return []
-    open_t = None
-    done = []
-    for ln in OUT.read_text().splitlines():
-        if not ln.strip():
-            continue
+DEMO = "https://demo.tradovateapi.com/v1"
+HERMES_DAY = "2026-09-28"  # card already sent: 5 trades, W 3, L 2, +80
+
+
+def _get(url, headers):
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _post(url, payload, headers=None):
+    data = json.dumps(payload).encode()
+    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, data=data, headers=h, method="POST")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode())
+
+
+def tv_session():
+    base = os.environ.get("TRADOVATE_BASE", DEMO).rstrip("/")
+    if "live.tradovateapi.com" in base:
+        raise RuntimeError("live url")
+    name = os.environ.get("TRADOVATE_NAME") or ""
+    password = os.environ.get("TRADOVATE_PASSWORD") or ""
+    if not name or not password:
+        raise RuntimeError("missing creds")
+    body = {
+        "name": name,
+        "password": password,
+        "appId": os.environ.get("TRADOVATE_APP_ID", "MNQHybrid"),
+        "appVersion": os.environ.get("TRADOVATE_APP_VERSION", "0.1"),
+        "deviceId": os.environ.get("TRADOVATE_DEVICE_ID") or "maximus-eod",
+    }
+    if os.environ.get("TRADOVATE_CID"):
         try:
-            o = json.loads(ln)
-        except Exception:
-            continue
-        ts = o.get("ts")
-        if not ts:
-            continue
-        dt = datetime.fromtimestamp(ts / 1000, TZ)
-        ev = o.get("event")
-        if ev == "struct40_submit" and o.get("submit") and dt.date() == day:
-            open_t = o
-            continue
-        if open_t is None or ev not in ("trade_done", "eod_flat"):
-            continue
-        if dt.date() != day and dt.date() != datetime.fromtimestamp(open_t["ts"] / 1000, TZ).date():
-            continue
-        if ev == "eod_flat" and o.get("rc") not in (0, "0"):
-            continue
-        side = open_t.get("side")
-        try:
-            entry = float(open_t.get("mid"))
-        except (TypeError, ValueError):
-            open_t = None
-            continue
-        how = o.get("how") or ""
-        if ev == "trade_done" and how == "tp":
-            pts = TP
-        elif ev == "trade_done" and how == "stop":
-            pts = -STOP
-        else:
-            try:
-                px = float(o.get("mid"))
-            except (TypeError, ValueError):
-                open_t = None
-                continue
-            pts = (px - entry) if side == "Buy" else (entry - px)
-        when = datetime.fromtimestamp(open_t["ts"] / 1000, TZ).strftime("%H:%M")
-        done.append({
-            "when": when,
+            body["cid"] = int(os.environ["TRADOVATE_CID"])
+        except ValueError:
+            body["cid"] = os.environ["TRADOVATE_CID"]
+    if os.environ.get("TRADOVATE_SEC"):
+        body["sec"] = os.environ["TRADOVATE_SEC"]
+    auth = _post(base + "/auth/accesstokenrequest", body)
+    token = auth.get("accessToken")
+    if not token:
+        raise RuntimeError(auth.get("errorText") or "auth_fail")
+    headers = {"Authorization": "Bearer " + token, "Accept": "application/json"}
+    account_id = os.environ.get("TRADOVATE_ACCOUNT_ID")
+    if account_id:
+        account_id = int(account_id)
+    else:
+        acc = _get(base + "/account/list", headers)
+        pick = None
+        if isinstance(acc, list):
+            for a in acc:
+                if "DEMO" in str(a.get("name") or "").upper():
+                    pick = a
+                    break
+            if pick is None and acc:
+                pick = acc[0]
+        if not pick:
+            raise RuntimeError("no account")
+        account_id = int(pick["id"])
+    found = _get(base + "/contract/find?name=" + SYMBOL, headers)
+    contract_id = int((found or {}).get("id") or 0)
+    if contract_id <= 0:
+        raise RuntimeError("no contract")
+    return base, headers, account_id, contract_id
+
+
+def fill_when(raw):
+    if not raw:
+        return None
+    text = str(raw).replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(TZ)
+
+
+def pair_fills(fills):
+    """One trade each time the account goes flat. Points are the real fill prices."""
+    net = 0
+    avg = 0.0
+    side = None
+    opened = None
+    exit_notional = 0.0
+    exit_qty = 0
+    out = []
+
+    def emit_trade():
+        nonlocal exit_notional, exit_qty, avg, side, opened
+        if exit_qty <= 0 or side is None:
+            return
+        exit_px = exit_notional / exit_qty
+        pts = (exit_px - avg) if side == "Buy" else (avg - exit_px)
+        out.append({
+            "when": opened.strftime("%H:%M") if opened else "",
             "side": side,
-            "poi": open_t.get("poi"),
-            "entry": entry,
-            "pts": round(float(pts), 1),
-            "how": "target" if how == "tp" else ("stop" if how == "stop" else "flat"),
+            "qty": exit_qty,
+            "entry": avg,
+            "exit": exit_px,
+            "pts": round(pts, 1),
         })
-        open_t = None
-    return done
+        exit_notional = 0.0
+        exit_qty = 0
+
+    for f in fills:
+        action = f.get("action")
+        if action not in ("Buy", "Sell"):
+            continue
+        try:
+            qty = int(f.get("qty") or 0)
+            px = float(f.get("price"))
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0:
+            continue
+        signed = qty if action == "Buy" else -qty
+        when = fill_when(f.get("timestamp"))
+        if net == 0 or (net > 0 and signed > 0) or (net < 0 and signed < 0):
+            new = abs(net) + abs(signed)
+            avg = (avg * abs(net) + px * abs(signed)) / new
+            if net == 0:
+                side = action
+                opened = when
+            net += signed
+            continue
+        prev = net
+        closing = min(abs(signed), abs(prev))
+        exit_notional += px * closing
+        exit_qty += closing
+        net = prev + signed
+        crossed = net == 0 or (prev > 0 > net) or (prev < 0 < net)
+        if not crossed:
+            continue
+        emit_trade()
+        if net == 0:
+            avg = 0.0
+            side = None
+            opened = None
+        else:
+            side = "Buy" if net > 0 else "Sell"
+            avg = px
+            opened = when
+    return out
+
+
+def day_trades(day):
+    base, headers, account_id, contract_id = tv_session()
+    raw = _get(base + "/fill/list", headers)
+    if not isinstance(raw, list):
+        raise RuntimeError("fill list")
+    chosen = []
+    for f in raw:
+        if int(f.get("contractId") or 0) != contract_id:
+            continue
+        if f.get("accountId") not in (None, account_id, str(account_id)):
+            continue
+        when = fill_when(f.get("timestamp"))
+        if when is None or when.date() != day:
+            continue
+        minute = when.hour * 60 + when.minute
+        if minute < SESSION_START or minute > SESSION_END + 30:
+            continue
+        chosen.append(f)
+    chosen.sort(key=lambda f: str(f.get("timestamp") or ""))
+    return pair_fills(chosen)
 
 
 def eod_text(day, trades):
     pts = round(sum(t["pts"] for t in trades), 1)
-    dol = int(round(pts * QTY * 2))
+    dol = int(round(sum(t["pts"] * t["qty"] * 2 for t in trades)))
     w = sum(1 for t in trades if t["pts"] > 0)
     l = sum(1 for t in trades if t["pts"] < 0)
     lines = [
@@ -201,7 +316,7 @@ def eod_text(day, trades):
     ]
     for t in trades:
         lines.append(
-            f"{t['when']} {t['side']} {t['poi']} @{t['entry']:.2f}  {t['pts']:+.1f} {t['how']}"
+            f"{t['when']} {t['side']} {t['qty']} @{t['entry']:.2f} -> {t['exit']:.2f}  {t['pts']:+.1f}"
         )
     if not trades:
         lines.append("no fills")
@@ -218,12 +333,19 @@ def maybe_eod(now=None):
     key = day.isoformat()
     if eod_sent(key):
         return
-    trades = day_trades(day)
+    if key == HERMES_DAY:
+        mark_eod(key)
+        return
+    try:
+        trades = day_trades(day)
+    except Exception as e:
+        emit(event="eod_pnl_fail", day=key, err=str(e)[:200], note=NOTE)
+        return
     text = eod_text(day, trades)
     if not discord(text):
         return
     pts = round(sum(t["pts"] for t in trades), 1)
-    emit(event="eod_pnl", day=key, n=len(trades), pts=pts, note=NOTE)
+    emit(event="eod_pnl", day=key, n=len(trades), pts=pts, note=NOTE, src="tradovate_fills")
     mark_eod(key)
 
 
