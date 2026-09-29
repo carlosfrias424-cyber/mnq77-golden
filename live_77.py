@@ -275,11 +275,90 @@ def send_flat():
         "TRADOVATE_SYMBOL": SYMBOL,
     })
     env.pop("MNQ_SIDE", None)
+    env.pop("MNQ_POS", None)
     r = subprocess.run(
         [str(PY), str(SUBMIT)], cwd=str(ROOT), env=env,
         capture_output=True, text=True, timeout=60,
     )
     return r.returncode, (r.stdout or "")[-300:]
+
+
+def broker_open():
+    env = os.environ.copy()
+    env.update({
+        "MNQ_POS": "1",
+        "TRADOVATE_ENV": "demo",
+        "TRADOVATE_SYMBOL": SYMBOL,
+    })
+    env.pop("MNQ_SIDE", None)
+    env.pop("MNQ_FLATTEN", None)
+    try:
+        r = subprocess.run(
+            [str(PY), str(SUBMIT)], cwd=str(ROOT), env=env,
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception as e:
+        emit(event="broker_pos_fail", err=str(e)[:200], note=NOTE)
+        return None
+    found = None
+    for ln in (r.stdout or "").splitlines():
+        try:
+            o = json.loads(ln)
+        except Exception:
+            continue
+        if o.get("event") == "broker_pos":
+            found = o
+    if found is None:
+        emit(event="broker_pos_fail", rc=r.returncode, out=(r.stdout or "")[-200:], note=NOTE)
+    return found
+
+
+def adopt_open(pos, quiet):
+    if pos is not None:
+        return pos
+    bro = broker_open()
+    if not bro:
+        return pos
+    try:
+        net = int(bro.get("net") or 0)
+    except (TypeError, ValueError):
+        return pos
+    if net == 0:
+        emit(event="broker_flat", note=NOTE)
+        return pos
+    side = "Buy" if net > 0 else "Sell"
+    name, rail, entry = "H4", 0.0, 0.0
+    try:
+        entry = float(bro.get("px") or 0)
+    except (TypeError, ValueError):
+        entry = 0.0
+    if OUT.exists():
+        for ln in OUT.read_text().splitlines()[::-1]:
+            if not ln.strip():
+                continue
+            try:
+                o = json.loads(ln)
+            except Exception:
+                continue
+            if o.get("event") != "struct40_submit" or not o.get("submit"):
+                continue
+            if o.get("side") != side:
+                continue
+            got, _, px = str(o.get("poi") or "").partition("@")
+            try:
+                rail = float(px)
+                entry = float(o.get("mid") or entry)
+            except (TypeError, ValueError):
+                continue
+            name = got or name
+            break
+    if entry <= 0 or rail <= 0:
+        emit(event="adopt_fail", net=net, note=NOTE)
+        return pos
+    pos = (side, entry, name, rail, time.time())
+    save_state(pos, quiet)
+    emit(event="adopt", side=side, poi=f"{name}@{rail:.2f}", mid=entry, net=net, note=NOTE)
+    return pos
 
 
 def single_instance():
@@ -392,6 +471,7 @@ def main():
         emit(event="fatal", err=str(e)[:300], note=NOTE)
         return
     pos, quiet = load_state()
+    pos = adopt_open(pos, quiet)
     held = single_instance()
     emit(
         event="seven_start", fire=True, note=NOTE, symbol=SYMBOL,
@@ -438,12 +518,14 @@ def main():
                 hit_tp = bar.l <= tp_px
             if hit_stop or hit_tp:
                 how = "stop" if hit_stop else "tp"
+                rc, out = send_flat()
                 emit(
-                    event="trade_done", how=how, side=side,
-                    poi=f"{name}@{rail:.2f}", mid=bar.c, note=NOTE,
+                    event="trade_done", how=how, rc=rc, side=side,
+                    poi=f"{name}@{rail:.2f}", mid=bar.c, out=out, note=NOTE,
                 )
-                discord_out(side, name, rail, entry, how)
-                pos = finish(pos, quiet, how)
+                if rc == 0:
+                    discord_out(side, name, rail, entry, how)
+                    pos = finish(pos, quiet, how)
             elif session_over(pos, bar.t0 + 60):
                 rc, out = send_flat()
                 emit(
