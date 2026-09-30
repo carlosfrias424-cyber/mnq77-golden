@@ -38,11 +38,11 @@ TZ = ZoneInfo("America/Chicago")
 SYMBOL = "MNQZ6"
 QTY, STOP, TP, NEAR = 5, 20.0, 40.0, 15.0
 SESSION_START, SESSION_END = 10 * 60, 16 * 60
-SKIP = ("ONH", "ONL", "EMA", "OPEN")
-SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
-RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
+SKIP = ("EMA", "OPEN")
+SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT", "ONL"}
+RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE", "ONH"}
 BARE = {"H4", "H1"}
-NOTE = "fade_hold15_10_16"
+NOTE = "fade_hold15_10_16_on"
 
 
 def envload():
