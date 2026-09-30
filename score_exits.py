@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Paper only. No orders. Does not change the live bot.
 
-Same entries as fade_hold15_10_16_on.
-10:00-16:00 CT. Hold close within 15. Next bar lifts. One position.
-No quiet lock. ONH and ONL included. EMA and OPEN skipped.
-Side comes from the hold close, same as live pick().
-This will not match the old score_fade card. That card used a quiet lock
-and it measured the 15 on the lift close.
-
-Grid is the exit only. If stop and target both print on the same bar, the stop counts.
+Hermes entry rule. No rail lock.
+Last two weeks. 10:00-16:00 Chicago. Hold close within 15.
+Next bar lifts. One position. Same rail can fire again after the trade is done.
+Skip ONH, ONL, EMA, OPEN.
+A stop that trades is minus the stop. A target that trades is plus the target.
+A 16:00 flatten is the last price, capped at the stop and the target.
+If stop and target both print on the same bar, the stop counts.
 """
 from __future__ import annotations
 
@@ -22,11 +21,11 @@ import databento as db
 TZ = ZoneInfo("America/Chicago")
 ROOT = Path("/home/administrator/.openclaw/workspace/mnq_hybrid")
 POI = ROOT / "logs/tv_poi.jsonl"
-STOPS = (12, 15, 18, 20, 22, 25, 30)
-TPS = (20, 24, 30, 35, 40, 45, 50, 60)
-SKIP = ("EMA", "OPEN")
-SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT", "ONL"}
-RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE", "ONH"}
+STOPS = (18, 20, 22, 24, 25, 26, 28, 30, 35)
+TPS = (30, 35, 40, 45, 50, 60)
+SKIP = ("ONH", "ONL", "EMA", "OPEN")
+SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
+RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
 
 
@@ -129,6 +128,10 @@ def in_session(dt):
     return 10 * 60 <= m < 16 * 60
 
 
+def session_over(dt):
+    return dt.hour * 60 + dt.minute >= 16 * 60
+
+
 def pick(hold, lift, active):
     best = None
     for name, rail in active.items():
@@ -186,8 +189,9 @@ def run(alerts, bars, stop, tp):
                 pts, how = (-stop, "stop") if hit_stop else (tp, "tp")
                 out.append((opened, side, name, rail, entry, pts, how))
                 pos = None
-            elif close_dt.hour * 60 + close_dt.minute >= 16 * 60:
-                out.append((opened, side, name, rail, entry, pts_close, "eod"))
+            elif session_over(close_dt):
+                pts = max(-stop, min(tp, pts_close))
+                out.append((opened, side, name, rail, entry, pts, "eod"))
                 pos = None
             continue
         if hold is None or not in_session(close_dt):
@@ -195,14 +199,42 @@ def run(alerts, bars, stop, tp):
         hit = pick(hold, b, active)
         if hit is None:
             continue
-        dist, side, name, rail = hit
+        _dist, side, name, rail = hit
         pos = (side, b["c"], name, rail, dt)
     if pos:
         side, entry, name, rail, opened = pos
         last = bars[keys[-1]]
         pts = (last["c"] - entry) if side == "Buy" else (entry - last["c"])
+        pts = max(-stop, min(tp, pts))
         out.append((opened, side, name, rail, entry, pts, "open"))
-    return out, ambiguous
+    return out, ambiguous, keys
+
+
+def extra_past_stop(keys, bars, opened, side, entry, stop, tp):
+    """Points past the stop before the target, this trade alone. None if the target never prints."""
+    seen_stop = False
+    mae = 0.0
+    for dt in keys:
+        if dt < opened:
+            continue
+        b = bars[dt]
+        if side == "Buy":
+            mae = max(mae, entry - b["l"])
+            hit_stop = b["l"] <= entry - stop
+            hit_tp = b["h"] >= entry + tp
+        else:
+            mae = max(mae, b["h"] - entry)
+            hit_stop = b["h"] >= entry + stop
+            hit_tp = b["l"] <= entry - tp
+        if hit_stop and hit_tp and not seen_stop:
+            return None
+        if seen_stop and hit_tp:
+            return round(mae - stop, 2)
+        if hit_stop:
+            seen_stop = True
+        if session_over(dt + timedelta(minutes=1)):
+            break
+    return None
 
 
 def stats(rows):
@@ -219,19 +251,23 @@ def stats(rows):
 def main():
     envload()
     key = os.environ.get("DATABENTO_API_KEY") or os.environ["DATABENTO_KEY"]
-    start = "2026-09-14T14:00:00Z"
+    start = "2026-09-16T14:00:00Z"
     end = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     alerts = load_alerts()
     print("RAILS", len(alerts), flush=True)
-    print("ENTRIES live rule. GRID exits only. BOT NOT CHANGED.", flush=True)
+    print("WINDOW last two weeks. HERMES RULE. NO RAIL LOCK. ONH ONL skipped. BOT NOT CHANGED.", flush=True)
     bars = pull_bars(key, start, end)
     board = []
+    base_rows = None
+    base_keys = None
     for stop in STOPS:
         for tp in TPS:
-            rows, amb = run(alerts, bars, float(stop), float(tp))
+            rows, amb, keys = run(alerts, bars, float(stop), float(tp))
             closed, net, wr, pf = stats(rows)
             w = sum(1 for r in closed if r[5] > 0)
             l = sum(1 for r in closed if r[5] < 0)
+            if stop == 20 and tp == 40:
+                base_rows, base_keys = rows, keys
             board.append((net, stop, tp, len(closed), w, l, wr, pf, amb, rows))
     board.sort(key=lambda r: r[0], reverse=True)
     print(f"{'stop':>4} {'tp':>4} {'n':>4} {'W':>3} {'L':>3} {'WR':>6} {'PF':>5} {'pts':>8} {'$':>8}  note", flush=True)
@@ -245,8 +281,28 @@ def main():
         )
     best = board[0]
     base = next(r for r in board if r[1] == 20 and r[2] == 40)
-    print(f"BEST {best[1]}/{best[2]} {best[0]:+.1f} pts", flush=True)
-    print(f"CURRENT 20/40 {base[0]:+.1f} pts", flush=True)
+    print(f"BEST {best[1]}/{best[2]} {best[0]:+.1f} pts  ${best[0] * 10:+.0f}", flush=True)
+    print(f"CURRENT 20/40 {base[0]:+.1f} pts  ${base[0] * 10:+.0f}", flush=True)
+    print("FEW POINTS  20-stop losers that later reached the 40 target the same day. This trade alone.", flush=True)
+    extras = []
+    stops_n = 0
+    for opened, side, name, rail, entry, _pts, how in base_rows:
+        if how != "stop":
+            continue
+        stops_n += 1
+        extra = extra_past_stop(base_keys, bars, opened, side, entry, 20.0, 40.0)
+        if extra is None:
+            continue
+        extras.append((extra, opened, side, name, rail, entry))
+    print(f"STOPS {stops_n}  LATER_TARGET {len(extras)}", flush=True)
+    for n in (2, 3, 5, 8, 10):
+        k = sum(1 for e, *_ in extras if e <= n)
+        print(f"extra<={n} {k}", flush=True)
+    for extra, opened, side, name, rail, entry in sorted(extras):
+        print(
+            f"{opened:%m-%d %H:%M} {side:4} {name}@{rail:.2f} @{entry:.2f} extra {extra:.1f}",
+            flush=True,
+        )
     for title, row in (("BEST", best), ("CURRENT", base)):
         print(title, flush=True)
         for opened, side, name, rail, entry, pts, how in row[9]:
