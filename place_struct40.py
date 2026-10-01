@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""DEMO fade book: 5 MNQ. Market entry. Stop and target are prices.
+"""DEMO fade book: 5 MNQ. One market entry.
 
-Stop is 20 points from the fill. Target is 40 points from the fill.
-Both are attached to the market order, so a fill cannot leave the trade naked.
+Stop and target are prices from the signal, not from the fill.
+A buy signaled at 30500 gets a sell stop at 30480 and a sell limit at 30540.
+Those two orders are one OCO. When one fills, the other is cancelled.
+The old bracket strategy is not sent, so a fill cannot create a second pair.
 Demo URL only. Qty from MNQ_QTY env, default 5.
 Symbol is hard-locked to MNQZ6 (Dec). MNQU is forbidden.
 """
@@ -179,6 +181,104 @@ def report_mnq(base: str, headers: dict, account_id: int) -> int:
     return 0
 
 
+def contract_name(base: str, headers: dict, contract_id: int, cache: dict) -> str:
+    if contract_id in cache:
+        return cache[contract_id]
+    try:
+        item = requests.get(
+            base + "/contract/item", headers=headers,
+            params={"id": contract_id}, timeout=20,
+        ).json()
+        name = str((item or {}).get("name") or "").upper()
+    except Exception:
+        name = ""
+    cache[contract_id] = name
+    return name
+
+
+def mnq_net(base: str, headers: dict, account_id: int) -> int:
+    try:
+        pos_raw = requests.get(base + "/position/list", headers=headers, timeout=20).json()
+    except Exception:
+        return 0
+    positions = pos_raw if isinstance(pos_raw, list) else []
+    cache = {}
+    net = 0
+    for p in positions:
+        if int(p.get("accountId") or 0) != account_id:
+            continue
+        try:
+            n = int(float(p.get("netPos") or 0))
+        except (TypeError, ValueError):
+            continue
+        if n == 0:
+            continue
+        cid = int(p.get("contractId") or 0)
+        if cid <= 0 or contract_name(base, headers, cid, cache) != SYMBOL:
+            continue
+        net += n
+    return net
+
+
+def working_mnq(base: str, headers: dict, account_id: int) -> list:
+    dead = {"Filled", "Canceled", "Cancelled", "Rejected", "Expired", "Completed"}
+    try:
+        raw = requests.get(base + "/order/list", headers=headers, timeout=20).json()
+    except Exception:
+        return []
+    orders = raw if isinstance(raw, list) else []
+    cache = {}
+    live = []
+    for o in orders:
+        if int(o.get("accountId") or 0) != account_id:
+            continue
+        if str(o.get("ordStatus") or "") in dead:
+            continue
+        cid = int(o.get("contractId") or 0)
+        if cid <= 0 or contract_name(base, headers, cid, cache) != SYMBOL:
+            continue
+        live.append(int(o.get("id") or 0))
+    return live
+
+
+def place_signal_oco(base, headers, spec, account_id, side, signal, qty, stop_pts, tp_pts):
+    if side == "Buy":
+        stop_px = on_tick(signal - stop_pts)
+        tp_px = on_tick(signal + tp_pts)
+        exit_side = "Sell"
+    else:
+        stop_px = on_tick(signal + stop_pts)
+        tp_px = on_tick(signal - tp_pts)
+        exit_side = "Buy"
+    body = {
+        "accountSpec": spec,
+        "accountId": account_id,
+        "action": exit_side,
+        "symbol": SYMBOL,
+        "orderQty": qty,
+        "orderType": "Stop",
+        "price": stop_px,
+        "stopPrice": stop_px,
+        "timeInForce": "Day",
+        "isAutomated": True,
+        "other": {
+            "action": exit_side,
+            "orderType": "Limit",
+            "price": tp_px,
+        },
+    }
+    r = requests.post(base + "/order/placeoco", headers=headers, json=body, timeout=20)
+    if r.status_code == 404:
+        r = requests.post(base + "/order/placeOCO", headers=headers, json=body, timeout=20)
+    try:
+        result = r.json()
+    except Exception:
+        result = {"text": r.text[:400]}
+    order_id = result.get("orderId") if isinstance(result, dict) else None
+    failed = r.status_code >= 300 or not order_id or (isinstance(result, dict) and result.get("failureReason"))
+    return failed, r.status_code, result, stop_px, tp_px, order_id
+
+
 def main() -> int:
     envload()
     if os.environ.get("TRADOVATE_ENV", "demo").lower() != "demo":
@@ -325,37 +425,18 @@ def main() -> int:
         log(event="blocked", reason="missing MNQ_ENTRY")
         return 3
 
-    # Points from the fill. A buy target is above, the stop is below.
-    # A sell is the reverse. Tradovate applies these when the market fills.
-    if side == "Buy":
-        profit, stop = tp_pts, -stop_pts
-    else:
-        profit, stop = -tp_pts, stop_pts
-    params = {
-        "entryVersion": {
-            "orderQty": qty,
-            "orderType": "Market",
-            "timeInForce": "Day",
-        },
-        "brackets": [{
-            "qty": qty,
-            "profitTarget": profit,
-            "stopLoss": stop,
-            "trailingStop": False,
-        }],
-    }
+    # One market entry. No bracket on it. The OCO is the only exit.
     body = {
         "accountId": account_id,
         "accountSpec": spec,
         "symbol": symbol,
         "action": side,
-        "orderStrategyTypeId": 2,
+        "orderQty": qty,
+        "orderType": "Market",
+        "timeInForce": "Day",
         "isAutomated": True,
-        "params": json.dumps(params),
     }
-    r = requests.post(base + "/orderStrategy/startorderstrategy", headers=h, json=body, timeout=20)
-    if r.status_code == 404:
-        r = requests.post(base + "/orderStrategy/startOrderStrategy", headers=h, json=body, timeout=20)
+    r = requests.post(base + "/order/placeorder", headers=h, json=body, timeout=20)
     try:
         result = r.json()
     except Exception:
@@ -363,45 +444,62 @@ def main() -> int:
     order_id = result.get("orderId") if isinstance(result, dict) else None
     failed = r.status_code >= 300 or not order_id or (isinstance(result, dict) and result.get("failureReason"))
     if failed:
-        log(event="entry_fail", status=r.status_code, side=side, result=result, note="bracket_strategy")
+        log(event="entry_fail", status=r.status_code, side=side, result=result, note="market_only")
         return 7
 
     fill = wait_fill(base, h, int(order_id), qty)
-    if fill is None:
-        try:
-            pos_raw = requests.get(base + "/position/list", headers=h, timeout=20).json()
-        except Exception:
-            pos_raw = []
-        if isinstance(pos_raw, list):
-            for pos in pos_raw:
-                if int(pos.get("accountId") or 0) != account_id:
-                    continue
-                try:
-                    net = float(pos.get("netPos") or 0)
-                    px = float(pos.get("netPrice") or 0)
-                except (TypeError, ValueError):
-                    continue
-                if net != 0 and px > 0:
-                    fill = on_tick(px)
-                    break
+    net = mnq_net(base, h, account_id)
+    want = qty if side == "Buy" else -qty
+    if net == 0 or (net > 0) != (want > 0):
+        log(event="entry_unconfirmed", side=side, orderId=order_id, net=net, fill=fill, note="no_oco")
+        return 7
+    # Never exit more than this order filled. A larger net belongs to something else.
+    oco_qty = min(abs(net), qty)
     if fill is None:
         fill = on_tick(signal)
 
+    live = working_mnq(base, h, account_id)
+    if live:
+        log(
+            event="oco_skipped", reason="working order already there",
+            orders=live, side=side, net=net, note="no_second_exit",
+        )
+        return 0
+
+    oco_failed = True
+    oco_status = 0
+    oco_result = None
+    stop_px = tp_px = oco_id = None
+    for _ in range(3):
+        oco_failed, oco_status, oco_result, stop_px, tp_px, oco_id = place_signal_oco(
+            base, h, spec, account_id, side, signal, oco_qty, stop_pts, tp_pts,
+        )
+        if not oco_failed:
+            break
+        time.sleep(0.25)
+    if oco_failed:
+        log(
+            event="oco_fail", status=oco_status, side=side, signal=round(signal, 2),
+            fill=fill, qty=oco_qty, stop=stop_px, target=tp_px, result=oco_result,
+            note="position_open_no_exit",
+        )
+        return 7
+
     log(
-        event="oso_fire",
-        status=r.status_code,
+        event="oco_fire",
+        status=oco_status,
         side=side,
         symbol=symbol,
-        qty=qty,
+        qty=oco_qty,
         signal=round(signal, 2),
         fill=fill,
+        stop=stop_px,
+        target=tp_px,
         stop_pts=stop_pts,
         tp_pts=tp_pts,
-        profitTarget=profit,
-        stopLoss=stop,
         orderId=order_id,
-        result=result,
-        note="bracket_from_fill",
+        ocoId=oco_id,
+        note="prices_from_signal",
     )
     return 0
 
