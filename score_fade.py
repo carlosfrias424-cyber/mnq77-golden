@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Paper score only. No orders.
 
-Long: 1m bar trades a rail, closes above it, sell size > buy size.
-Next 1m bar: buy size > sell size, close higher, still above the rail.
-That close is the entry. If the next bar does not lift, the setup is dead.
-Short is the mirror.
-Book: stop 20, target 40. One trade at a time.
-Same rail stays quiet until price is 20 pts away.
-Tape: Databento B = buy aggressor, A = sell aggressor.
+Same book twice. Stop 20, target 40. 10:00-16:00 CT. Close within 15.
+TOUCH: the hold bar must trade the rail.
+NEAR10: the hold bar only has to come within 10 of the rail.
+Merged rails are not the exact line, so a 10-pt miss still counts.
+Close still has to be on the hold side of the rail, and within 15.
+Tape rule is unchanged. One trade at a time.
 """
 from __future__ import annotations
 
@@ -127,7 +126,16 @@ def pull_bars(key):
     return bars
 
 
-def score(alerts, bars, tp):
+def miss_of(bar, rail, slack):
+    if bar["l"] <= rail <= bar["h"]:
+        return 0.0
+    gap = (rail - bar["h"]) if rail > bar["h"] else (bar["l"] - rail)
+    if gap <= slack:
+        return gap
+    return None
+
+
+def score(alerts, bars, tp, slack):
     keys = [k for k in sorted(bars) if session(k)]
     ai = 0
     active = {}
@@ -174,7 +182,10 @@ def score(alerts, bars, tp):
             continue
         best = None
         for name, rail in active.items():
-            if name in quiet or not (hold["l"] <= rail <= hold["h"]):
+            if name in quiet:
+                continue
+            miss = miss_of(hold, rail, slack)
+            if miss is None:
                 continue
             if name in SUPPORT or (name in BARE and hold["c"] > rail):
                 side = "Buy"
@@ -196,16 +207,19 @@ def score(alerts, bars, tp):
             if dist > 15:
                 continue
             if best is None or dist < best[0]:
-                best = (dist, side, name, rail, hold)
+                best = (dist, miss, side, name, rail, hold)
         if best is None:
             continue
-        dist, side, name, rail, hold = best
+        dist, miss, side, name, rail, hold = best
         entry = b["c"]
         if side == "Buy":
             stop_px, tp_px = entry - STOP, entry + tp
         else:
             stop_px, tp_px = entry + STOP, entry - tp
-        meta = {"t": dt, "side": side, "name": name, "rail": rail, "entry": entry, "dist": dist}
+        meta = {
+            "t": dt, "side": side, "name": name, "rail": rail,
+            "entry": entry, "dist": dist, "miss": miss,
+        }
         pos = (side, entry, stop_px, tp_px, meta)
     return out
 
@@ -230,9 +244,21 @@ def show(title, rows, tp):
     for meta, pts, how in rows:
         print(
             f"{meta['t']:%m-%d %H:%M} {meta['side']:4} {meta['name']}@{meta['rail']:.2f} "
-            f"@{meta['entry']:.2f} {pts:+.1f} {how} dist {meta['dist']:.2f}",
+            f"@{meta['entry']:.2f} {pts:+.1f} {how} dist {meta['dist']:.2f} "
+            f"miss {meta['miss']:.2f}",
             flush=True,
         )
+
+
+def changed(touch, near):
+    at = {m["t"] for m, _, _ in touch}
+    bt = {m["t"] for m, _, _ in near}
+    added = [(m, p, h) for m, p, h in near if m["t"] not in at]
+    dropped = [(m, p, h) for m, p, h in touch if m["t"] not in bt]
+    print("ADDED  bar missed the rail by up to 10", flush=True)
+    show("", added, TP)
+    print("DROPPED  touch trade skipped because a near trade was already on", flush=True)
+    show("", dropped, TP)
 
 
 def main():
@@ -240,10 +266,13 @@ def main():
     key = os.environ.get("DATABENTO_API_KEY") or os.environ["DATABENTO_KEY"]
     alerts = load_alerts()
     print("RAILS", len(alerts), flush=True)
-    print("WINDOW 10:00-16:00 CT  dist<=15  stop 20", flush=True)
+    print("WINDOW 10:00-16:00 CT  close within 15  stop 20  target 40", flush=True)
     bars = pull_bars(key)
-    show("2.0R  target 40", score(alerts, bars, 40.0), 40.0)
-    show("1.5R  target 30", score(alerts, bars, 30.0), 30.0)
+    touch = score(alerts, bars, TP, 0.0)
+    near = score(alerts, bars, TP, 10.0)
+    show("TOUCH  bar must trade the rail", touch, TP)
+    show("NEAR10  bar within 10 of the rail", near, TP)
+    changed(touch, near)
 
 
 if __name__ == "__main__":
