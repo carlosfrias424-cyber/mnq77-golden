@@ -38,6 +38,10 @@ By week, keeping only `o20` under 8:
 
 This week stops bleeding. It does not become a big week. One winner on Sep 28 had already run 17 points and would be skipped. The prior two weeks stay green.
 
+## Saved to implement
+
+The cut is written as a rule in [CANDIDATES.md](CANDIDATES.md). It is not in the live bot. The next factor is tested on top of `o20` under 8, and by itself. Both numbers get a row there.
+
 ## Not tested yet
 
 ATR, VIX, and candle volume are not in the saved points. Do not treat them as a result. Next pull is those three, on the same 74 trades, written back into this folder.
