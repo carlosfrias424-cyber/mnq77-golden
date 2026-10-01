@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Fade. Demo only.
 
-10:00–16:00 CT. Stop 20, target 40, 5 MNQZ6.
+10:00–15:00 CT. Stop 20, target 40, 5 MNQZ6.
 Hold bar trades the rail, closes within 15 of it, and closes on the hold side.
 Sellers larger than buyers on a long. Buyers larger than sellers on a short.
 The next 1-minute bar lifts off the rail. That close is the entry, even if it is more than 15 away.
 Databento B is buying, A is selling. Delta is buy size minus sell size.
-One position. A stop or a target ends it. If neither has traded by 16:00, flatten.
+One position. A stop or a target ends it. If neither has traded by 15:00, flatten.
 After the trade is done, the same rail can fire again. No 20-point lock.
 The next trade can be the bar after the exit. No 120-second lock.
 One added check: the average true range of the last 14 one-minute bars.
@@ -40,12 +40,12 @@ TZ = ZoneInfo("America/Chicago")
 SYMBOL = "MNQZ6"
 QTY, STOP, TP, NEAR = 5, 20.0, 40.0, 15.0
 ATR_MAX = 15.0
-SESSION_START, SESSION_END = 10 * 60, 16 * 60
+SESSION_START, SESSION_END = 10 * 60, 15 * 60
 SKIP = ("EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT", "ONL"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE", "ONH"}
 BARE = {"H4", "H1"}
-NOTE = "fade_hold15_atr15"
+NOTE = "fade_hold15_atr15_1500"
 
 
 def envload():
@@ -176,7 +176,7 @@ def discord_out(side, name, rail, entry, how, px=None):
         pts = None if px is None else ((px - entry) if side == "Buy" else (entry - px))
     else:
         headline, color, pts = "FLAT", (212, 165, 116), None
-    result = "16:00" if pts is None else _money(pts)
+    result = "15:00" if pts is None else _money(pts)
     discord_card(headline, color, [
         ("RAIL", f"{name}  @  {rail:,.2f}"),
         ("ENTRY", f"{entry:,.2f}"),
@@ -477,9 +477,9 @@ def main():
     emit(
         event="seven_start", fire=True, note=NOTE, symbol=SYMBOL,
         book={"qty": QTY, "stop": STOP, "tp": TP, "symbol": SYMBOL},
-        session_start="10:00", session_end="16:00", near=NEAR, atr_max=ATR_MAX,
+        session_start="10:00", session_end="15:00", near=NEAR, atr_max=ATR_MAX,
         tape="hold_then_lift", vol_src="databento_trades",
-        exit="flat_1600", quiet="off", relock="next_bar",
+        exit="flat_1500", quiet="off", relock="next_bar",
         open=None if pos is None else pos[0],
         dead={k: v for k, v in quiet.items()},
     )
@@ -534,7 +534,7 @@ def main():
             elif session_over(pos, bar.t0 + 60):
                 rc, out = send_flat()
                 emit(
-                    event="eod_flat", how="16:00", rc=rc, side=side,
+                    event="eod_flat", how="15:00", rc=rc, side=side,
                     poi=f"{name}@{rail:.2f}", mid=bar.c, out=out, note=NOTE,
                 )
                 if rc == 0:
