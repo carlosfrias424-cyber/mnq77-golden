@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fade. Demo only. The +961 card.
+"""Fade. Demo only.
 
 10:00–16:00 CT. Stop 20, target 40, 5 MNQZ6.
 Hold bar trades the rail, closes within 15 of it, and closes on the hold side.
@@ -9,6 +9,8 @@ Databento B is buying, A is selling. Delta is buy size minus sell size.
 One position. A stop or a target ends it. If neither has traded by 16:00, flatten.
 After the trade is done, the same rail can fire again. No 20-point lock.
 The next trade can be the bar after the exit. No 120-second lock.
+One added check: the average true range of the last 14 one-minute bars.
+15 or more, do not send. Under 15, send. No other gate.
 """
 from __future__ import annotations
 
@@ -37,12 +39,13 @@ sys.path.insert(0, str(ROOT / "apps" / "watcher7"))
 TZ = ZoneInfo("America/Chicago")
 SYMBOL = "MNQZ6"
 QTY, STOP, TP, NEAR = 5, 20.0, 40.0, 15.0
+ATR_MAX = 15.0
 SESSION_START, SESSION_END = 10 * 60, 16 * 60
 SKIP = ("EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT", "ONL"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE", "ONH"}
 BARE = {"H4", "H1"}
-NOTE = "fade_hold15_10_16_on"
+NOTE = "fade_hold15_atr15"
 
 
 def envload():
@@ -415,6 +418,21 @@ def session_over(pos, close_ts):
     return close_dt.hour * 60 + close_dt.minute >= SESSION_END
 
 
+def atr14(candles):
+    """Average true range of the last 14 closed minutes. The last candle is the entry bar."""
+    if len(candles) < 15:
+        return None
+    use = candles[-15:]
+    if any(use[i].t0 - use[i - 1].t0 <= 0 for i in range(1, 15)):
+        return None
+    trs = []
+    for i in range(1, 15):
+        prev_c = use[i - 1].c
+        b = use[i]
+        trs.append(max(b.h - b.l, abs(b.h - prev_c), abs(b.l - prev_c)))
+    return sum(trs) / 14.0
+
+
 def pick(hold, lift, active):
     best = None
     for name, rail in active.items():
@@ -459,7 +477,7 @@ def main():
     emit(
         event="seven_start", fire=True, note=NOTE, symbol=SYMBOL,
         book={"qty": QTY, "stop": STOP, "tp": TP, "symbol": SYMBOL},
-        session_start="10:00", session_end="16:00", near=NEAR,
+        session_start="10:00", session_end="16:00", near=NEAR, atr_max=ATR_MAX,
         tape="hold_then_lift", vol_src="databento_trades",
         exit="flat_1600", quiet="off", relock="next_bar",
         open=None if pos is None else pos[0],
@@ -532,6 +550,16 @@ def main():
         if hit is None:
             continue
         dist, side, name, rail = hit
+        candles = vol.recent_closed_1(15)
+        atr = None if not candles or candles[-1].t0 != bar.t0 else atr14(candles)
+        if atr is None or atr >= ATR_MAX:
+            emit(
+                event="score", reason="atr_unknown" if atr is None else "atr_hot",
+                atr=None if atr is None else round(atr, 2),
+                side=side, poi=f"{name}@{rail:.2f}", mid=bar.c, dist=round(dist, 2),
+                note=NOTE,
+            )
+            continue
         rc, out = send_book(side, name, rail, bar.c, hold, bar)
         fill = bar.c
         if rc != 0:
@@ -553,7 +581,7 @@ def main():
         emit(
             event="struct40_submit" if rc == 0 else "struct40_fail",
             submit=rc == 0, rc=rc, side=side, poi=f"{name}@{rail:.2f}",
-            mid=fill, dist=round(dist, 2),
+            mid=fill, dist=round(dist, 2), atr=round(atr, 2),
             hold_delta=hold.delta, lift_delta=bar.delta,
             hold_c=hold.c, lift_c=bar.c, note=NOTE, out=out,
         )

@@ -141,6 +141,12 @@ class MnqVol:
         with self._lock:
             return self.closed_1[-1] if self.closed_1 else None
 
+    def recent_closed_1(self, n: int) -> list:
+        with self._lock:
+            if n <= 0 or not self.closed_1:
+                return []
+            return list(self.closed_1)[-n:]
+
     def last_closed_5(self) -> Optional[Candle]:
         with self._lock:
             return self.closed_5[-1] if self.closed_5 else None

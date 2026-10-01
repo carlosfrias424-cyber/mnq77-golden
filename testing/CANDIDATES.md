@@ -33,7 +33,7 @@ Next factors get tested on top of this cut, and alone, and both numbers get writ
 
 ## atr14 under 15
 
-Status: saved, not coded. Stronger than `o20` on this book. Not stacked on top of it.
+Status: coded in live_77.py. Not the 8-point rule. The bot skips when this average is 15 or more.
 
 `atr14` is the average 1-minute true range of the 14 bars ending at the entry bar.
 15.05 is the median of these 74 trades, not a number picked in advance. The hot half is the losing cluster. The quiet half is the book.
