@@ -254,6 +254,81 @@ def day_stats(bars):
     return out
 
 
+def slip_result(bars, keys, row, slip):
+    """Fill is worse than the signal by `slip` points.
+    Stop is 20 from that fill. Target is 40 from that fill.
+    """
+    signal = row["entry"]
+    side = row["side"]
+    fill = signal + slip if side == "Buy" else signal - slip
+    if side == "Buy":
+        stop_px = fill - 20.0
+        tp_px = fill + TP
+    else:
+        stop_px = fill + 20.0
+        tp_px = fill - TP
+    start = keys.index(row["dt"]) + 1
+    for dt in keys[start:]:
+        if dt.date() != row["dt"].date():
+            break
+        _o, h, l, c, _v = bars[dt]
+        if side == "Buy":
+            hit_s = l <= stop_px
+            hit_t = h >= tp_px
+            close_pts = c - fill
+        else:
+            hit_s = h >= stop_px
+            hit_t = l <= tp_px
+            close_pts = fill - c
+        end_m = (dt + timedelta(minutes=1)).hour * 60 + (dt + timedelta(minutes=1)).minute
+        if hit_s or hit_t:
+            return (-20.0, "stop") if hit_s else (TP, "tp")
+        if end_m >= 16 * 60:
+            return (max(-20.0, min(TP, close_pts)), "eod")
+    return (0.0, "open")
+
+
+def report_slip(bars, keys, played):
+    slips = (0.0, 1.0, 2.0, 3.0)
+    print("SLIP fill is worse than the signal. Stop 20 and target 40 are from the fill.", flush=True)
+    for row in played:
+        row["slip"] = {}
+        for slip in slips:
+            row["slip"][slip] = slip_result(bars, keys, row, slip)
+    weeks = ["09-14", "09-21", "09-28"]
+    print("WEEK".ljust(8) + "".join(f"{int(s):>12}" for s in slips), flush=True)
+    for wk in weeks + ["ALL"]:
+        grp = played if wk == "ALL" else [r for r in played if week_of(r["day"]) == wk]
+        cells = []
+        for slip in slips:
+            net = sum(r["slip"][slip][0] for r in grp)
+            w = sum(1 for r in grp if r["slip"][slip][0] > 0)
+            cells.append(f"{net:+.0f}/{w}W")
+        print(f"{wk:8}" + "".join(f"{c:>12}" for c in cells), flush=True)
+    print("FLIPPED scorecard win, live stop because the fill was worse", flush=True)
+    n2 = n3 = 0
+    for row in played:
+        base = row["slip"][0.0]
+        if base[0] <= 0:
+            continue
+        bad2 = row["slip"][2.0][0] < 0
+        bad3 = row["slip"][3.0][0] < 0
+        if not bad2 and not bad3:
+            continue
+        if bad2:
+            n2 += 1
+        if bad3:
+            n3 += 1
+        print(
+            f"{row['day']} {row['hm']} {row['side']:4} "
+            f"signal {base[0]:+.1f} {base[1]} "
+            f"slip2 {row['slip'][2.0][0]:+.1f} {row['slip'][2.0][1]} "
+            f"slip3 {row['slip'][3.0][0]:+.1f} {row['slip'][3.0][1]}",
+            flush=True,
+        )
+    print(f"FLIPPED_2 {n2} FLIPPED_3 {n3}", flush=True)
+
+
 def num(v, p=1):
     if v is None:
         return "na"
@@ -375,6 +450,7 @@ def main():
         f"losses {num(med([r['mae'] for r in losses]))}",
         flush=True,
     )
+    report_slip(bars, keys, played)
 
 
 if __name__ == "__main__":
