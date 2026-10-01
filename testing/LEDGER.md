@@ -40,8 +40,11 @@ This week stops bleeding. It does not become a big week. One winner on Sep 28 ha
 
 ## Saved to implement
 
-The cut is written as a rule in [CANDIDATES.md](CANDIDATES.md). It is not in the live bot. The next factor is tested on top of `o20` under 8, and by itself. Both numbers get a row there.
+Both cuts are in [CANDIDATES.md](CANDIDATES.md). Neither is in the live bot.
 
-## Not tested yet
+`o20` under 8 turns this week from -60 to +40, book +436.6.
+`atr14` under 15 turns this week from -60 to +100, book +458.6. Putting them together is worse than ATR alone.
 
-ATR, VIX, and candle volume are not in the saved points. Do not treat them as a result. Next pull is those three, on the same 74 trades, written back into this folder.
+## Not a result
+
+Entry-candle volume does not separate. VIX did not load. Do not treat either as a gate.
