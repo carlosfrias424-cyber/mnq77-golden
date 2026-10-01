@@ -10,6 +10,7 @@ end of the pull is marked open, not as a finished result.
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -99,11 +100,35 @@ def night_of(dt):
     return d.isoformat()
 
 
-def pull_bars(key):
-    start = "2026-09-27T22:00:00Z"
-    end = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    print(f"PULL {start} {end}", flush=True)
-    data = db.Historical(key).timeseries.get_range(
+def parse_end(raw):
+    text = str(raw).strip().replace("Z", "+00:00")
+    if "." in text:
+        head, tail = text.split(".", 1)
+        if "+" in tail:
+            text = head + "+" + tail.split("+", 1)[1]
+        else:
+            text = head + "+00:00"
+    avail = datetime.fromisoformat(text)
+    if avail.tzinfo is None:
+        avail = avail.replace(tzinfo=timezone.utc)
+    return avail.astimezone(timezone.utc)
+
+
+def tape_end(client):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        rng = client.metadata.get_dataset_range(dataset="GLBX.MDP3")
+        raw = rng["end"] if isinstance(rng, dict) else getattr(rng, "end", None)
+        if raw is not None:
+            end = min(now, parse_end(raw))
+            return end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception as e:
+        print("RANGE", type(e).__name__, str(e)[:180], flush=True)
+    return (now - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def get_trades(client, start, end):
+    return client.timeseries.get_range(
         dataset="GLBX.MDP3",
         symbols="MNQZ6",
         stype_in="raw_symbol",
@@ -111,6 +136,22 @@ def pull_bars(key):
         start=start,
         end=end,
     )
+
+
+def pull_bars(key):
+    client = db.Historical(key)
+    start = "2026-09-27T22:00:00Z"
+    end = tape_end(client)
+    print(f"PULL {start} {end}", flush=True)
+    try:
+        data = get_trades(client, start, end)
+    except Exception as e:
+        m = re.search(r"available up to '([^']+)'", str(e))
+        if not m:
+            raise
+        end = (parse_end(m.group(1)) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"RETRY {end}", flush=True)
+        data = get_trades(client, start, end)
     bars = {}
     n = 0
     for rec in data:
