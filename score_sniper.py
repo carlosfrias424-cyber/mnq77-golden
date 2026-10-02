@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """Score only. No orders.
 
-Same tapes. Two entries, so the change is visible.
+The process that is running. Not the later files.
 
-SNIPER is the bot. The hold bar trades the rail and closes within 15.
-The next minute is watched print by print. The first print where the tape
-has turned, and price is still within 15 of the rail, is the fill.
-If that minute ends without one, there is no trade.
-
-CLOSE waits for that minute to finish and enters only if the close is still within 15.
-LIVE is the bot that is running. Same minute close, but the close can be any distance.
-
-Stop 20, target 40, 5 MNQ. 10:00-15:00 CT.
-ATR of the last 14 minutes must be under 15. One position.
+10:00-16:00 CT. Stop 20, target 40, 5 MNQ.
+Hold bar trades the rail, closes within 15, on the hold side.
+Sellers larger on a long. Buyers larger on a short.
+The next minute lifts. That close is the fill, even if it is more than 15 away.
+No ATR filter. One position. Flatten at 16:00.
 """
 from __future__ import annotations
 
@@ -94,7 +89,7 @@ def in_session(dt):
     if dt.weekday() >= 5:
         return False
     m = dt.hour * 60 + dt.minute
-    return 10 * 60 <= m < 15 * 60
+    return 10 * 60 <= m < 16 * 60
 
 
 def pull(key):
@@ -105,7 +100,7 @@ def pull(key):
         stype_in="raw_symbol",
         schema="trades",
         start="2026-09-14T13:00:00Z",
-        end="2026-09-25T21:00:00Z",
+        end=datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
     bars = {}
     n = 0
@@ -192,7 +187,7 @@ def crossed(side, px, stop_px, tp_px):
 
 
 def eod_of(dt):
-    return dt.replace(hour=15, minute=0, second=0, microsecond=0).timestamp()
+    return dt.replace(hour=16, minute=0, second=0, microsecond=0).timestamp()
 
 
 def score(alerts, bars, mode):
@@ -240,12 +235,14 @@ def score(alerts, bars, mode):
         hit = arm(hold, active)
         if hit is None:
             continue
-        atr = atr14(keys, bars, i - 1)
-        if atr is None or atr >= ATR_MAX:
-            continue
+        atr = None
+        if mode != "now":
+            atr = atr14(keys, bars, i - 1)
+            if atr is None or atr >= ATR_MAX:
+                continue
         _dist, side, name, rail = hit
         armed += 1
-        if mode in ("close", "live"):
+        if mode in ("close", "live", "now"):
             if side == "Buy":
                 ok = b["buy"] > b["sell"] and b["c"] > hold["c"] and b["c"] > rail
             else:
@@ -329,7 +326,7 @@ def show(title, rows):
     for meta, pts, how in rows:
         print(
             f"{meta['t']:%m-%d %H:%M:%S} {meta['side']:4} {meta['name']}@{meta['rail']:.2f} "
-            f"@{meta['entry']:.2f} {pts:+.1f} {how} dist {meta['dist']:.2f} atr {meta['atr']:.1f}",
+            f"@{meta['entry']:.2f} {pts:+.1f} {how} dist {meta['dist']:.2f}",
             flush=True,
         )
 
@@ -339,17 +336,11 @@ def main():
     key = os.environ.get("DATABENTO_API_KEY") or os.environ["DATABENTO_KEY"]
     alerts = load_alerts()
     print("RAILS", len(alerts), flush=True)
-    print("WINDOW 10:00-15:00 CT  within 15  stop 20  target 40  atr under 15", flush=True)
+    print("WINDOW 10:00-16:00 CT  close any distance  stop 20  target 40  no atr", flush=True)
     bars = pull(key)
-    sniper, a1, f1 = score(alerts, bars, "sniper")
-    close, a2, f2 = score(alerts, bars, "close")
-    live, a3, f3 = score(alerts, bars, "live")
-    print(f"SNIPER_ARMED {a1}  FIRED {f1}", flush=True)
-    show("SNIPER  first print, still within 15.", sniper)
-    print(f"CLOSE_ARMED {a2}  FIRED {f2}", flush=True)
-    show("CLOSE  minute close, only if that close is still within 15.", close)
-    print(f"LIVE_ARMED {a3}  FIRED {f3}", flush=True)
-    show("LIVE  minute close, any distance. This is the bot running now.", live)
+    rows, armed, fired = score(alerts, bars, "now")
+    print(f"ARMED {armed}  FIRED {fired}", flush=True)
+    show("NOW  the process that is running. Through the last print.", rows)
 
 
 if __name__ == "__main__":
