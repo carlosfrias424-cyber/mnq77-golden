@@ -310,8 +310,9 @@ def repair_mnq(base, headers, spec, account_id, stop_pts, tp_pts) -> int:
         log(event="repair_fail", reason="no fill price", net=net)
         return 7
     qty = min(abs(net), QTY)
+    stop_px, tp_px = signal_band(side, px, stop_pts, tp_pts)
     failed, status, result, stop_px, tp_px, oco_id = place_signal_oco(
-        base, headers, spec, account_id, side, px, qty, stop_pts, tp_pts,
+        base, headers, spec, account_id, side, stop_px, tp_px, qty,
     )
     if failed:
         log(
@@ -326,15 +327,33 @@ def repair_mnq(base, headers, spec, account_id, stop_pts, tp_pts) -> int:
     return 0
 
 
-def place_signal_oco(base, headers, spec, account_id, side, signal, qty, stop_pts, tp_pts):
+def order_failed(status: int, result) -> tuple[bool, object]:
+    """Tradovate sends failureReason Success on a good order. That is not a reject."""
+    if not isinstance(result, dict):
+        return True, None
+    order_id = result.get("orderId")
+    reason = str(result.get("failureReason") or "")
+    bad = reason not in ("", "Success", "None")
+    return status >= 300 or not order_id or bad, order_id
+
+
+def signal_band(side: str, signal: float, stop_pts: float, tp_pts: float) -> tuple[float, float]:
     if side == "Buy":
-        stop_px = on_tick(signal - stop_pts)
-        tp_px = on_tick(signal + tp_pts)
-        exit_side = "Sell"
-    else:
-        stop_px = on_tick(signal + stop_pts)
-        tp_px = on_tick(signal - tp_pts)
-        exit_side = "Buy"
+        return on_tick(signal - stop_pts), on_tick(signal + tp_pts)
+    return on_tick(signal + stop_pts), on_tick(signal - tp_pts)
+
+
+def fill_inside(side: str, fill: float, stop_px: float, tp_px: float) -> bool:
+    """A stop or target already through the fill makes Tradovate reject the whole OCO."""
+    if side == "Buy":
+        return stop_px < fill < tp_px
+    return tp_px < fill < stop_px
+
+
+def place_signal_oco(base, headers, spec, account_id, side, stop_px, tp_px, qty):
+    exit_side = "Sell" if side == "Buy" else "Buy"
+    # A Stop uses price. stopPrice as well makes this a StopLimit, and Tradovate
+    # rejects that pair with the limit as Wrong OCO combination.
     body = {
         "accountSpec": spec,
         "accountId": account_id,
@@ -343,7 +362,6 @@ def place_signal_oco(base, headers, spec, account_id, side, signal, qty, stop_pt
         "orderQty": qty,
         "orderType": "Stop",
         "price": stop_px,
-        "stopPrice": stop_px,
         "timeInForce": "Day",
         "isAutomated": True,
         "other": {
@@ -359,8 +377,7 @@ def place_signal_oco(base, headers, spec, account_id, side, signal, qty, stop_pt
         result = r.json()
     except Exception:
         result = {"text": r.text[:400]}
-    order_id = result.get("orderId") if isinstance(result, dict) else None
-    failed = r.status_code >= 300 or not order_id or (isinstance(result, dict) and result.get("failureReason"))
+    failed, order_id = order_failed(r.status_code, result)
     return failed, r.status_code, result, stop_px, tp_px, order_id
 
 
@@ -529,8 +546,7 @@ def main() -> int:
         result = r.json()
     except Exception:
         result = {"text": r.text[:400]}
-    order_id = result.get("orderId") if isinstance(result, dict) else None
-    failed = r.status_code >= 300 or not order_id or (isinstance(result, dict) and result.get("failureReason"))
+    failed, order_id = order_failed(r.status_code, result)
     if failed:
         log(event="entry_fail", status=r.status_code, side=side, result=result, note="market_only")
         return 7
@@ -544,6 +560,8 @@ def main() -> int:
     # Never exit more than this order filled. A larger net belongs to something else.
     oco_qty = min(abs(net), qty)
     if fill is None:
+        fill = position_px(base, h, account_id)
+    if not fill:
         fill = on_tick(signal)
 
     stops, limits = working_exits(base, h, account_id)
@@ -554,13 +572,22 @@ def main() -> int:
         )
         return 0
 
+    stop_px, tp_px = signal_band(side, signal, stop_pts, tp_pts)
+    if not fill_inside(side, fill, stop_px, tp_px):
+        log(
+            event="oco_through", side=side, signal=round(signal, 2), fill=fill,
+            stop=stop_px, target=tp_px, note="signal_price_already_through_fill",
+        )
+        flatten_mnq(base, h, account_id)
+        return 7
+
     oco_failed = True
     oco_status = 0
     oco_result = None
-    stop_px = tp_px = oco_id = None
+    oco_id = None
     for _ in range(3):
         oco_failed, oco_status, oco_result, stop_px, tp_px, oco_id = place_signal_oco(
-            base, h, spec, account_id, side, signal, oco_qty, stop_pts, tp_pts,
+            base, h, spec, account_id, side, stop_px, tp_px, oco_qty,
         )
         if not oco_failed:
             break
