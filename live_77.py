@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Fade. Demo only.
+"""Fade. Demo only. The 458 card. Nothing else.
 
-10:00–15:00 CT. Stop 20, target 40, 5 MNQZ6.
-Hold bar trades the rail, closes within 15 of it, and closes on the hold side.
-Sellers larger than buyers on a long. Buyers larger than sellers on a short.
-The next minute is the tape. As soon as it lifts, and price is still within 15 of the rail, that price is the entry. If price is outside 15, do not chase.
-Databento B is buying, A is selling. Delta is buy size minus sell size.
-One position. A stop or a target ends it. If neither has traded by 15:00, flatten.
-After the trade is done, the same rail can fire again. No 20-point lock.
-The next trade can be the bar after the exit. No 120-second lock.
-One added check: the average true range of the last 14 one-minute bars.
-15 or more, do not send. Under 15, send. No other gate.
+10:00 through 16:00 Chicago. Stop 20, target 40, 5 MNQZ6. One position.
+The hold bar trades the rail. Its close is within 15 of the rail.
+Above that close is a buy. Below it is a sell. A named low can be a short.
+Sellers are larger on the hold for a long. The next minute's buyers are larger,
+and that minute closes higher and above the rail. Short is the flip.
+That close is the fill. It can be farther than 15.
+The average range of the 14 minutes ending on that bar must be under 15.
+Skip ONH, ONL, EMA, OPEN. A rail is not locked after a trade.
+Still open at 16:00, flatten at that close.
 """
 from __future__ import annotations
 
@@ -40,12 +39,12 @@ TZ = ZoneInfo("America/Chicago")
 SYMBOL = "MNQZ6"
 QTY, STOP, TP, NEAR = 5, 20.0, 40.0, 15.0
 ATR_MAX = 15.0
-SESSION_START, SESSION_END = 10 * 60, 15 * 60
-SKIP = ("EMA", "OPEN")
-SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT", "ONL"}
-RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE", "ONH"}
+SESSION_START, SESSION_END = 10 * 60, 16 * 60
+SKIP = ("ONH", "ONL", "EMA", "OPEN")
+SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
+RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "fade_sniper15_atr15_1500"
+NOTE = "fade_458"
 
 
 def envload():
@@ -176,7 +175,7 @@ def discord_out(side, name, rail, entry, how, px=None):
         pts = None if px is None else ((px - entry) if side == "Buy" else (entry - px))
     else:
         headline, color, pts = "FLAT", (212, 165, 116), None
-    result = "15:00" if pts is None else _money(pts)
+    result = "16:00" if pts is None else _money(pts)
     discord_card(headline, color, [
         ("RAIL", f"{name}  @  {rail:,.2f}"),
         ("ENTRY", f"{entry:,.2f}"),
@@ -433,34 +432,6 @@ def atr14(candles):
     return sum(trs) / 14.0
 
 
-def arm_hold(hold, active):
-    best = None
-    for name, rail in active.items():
-        if not (hold.l <= rail <= hold.h):
-            continue
-        dist = abs(hold.c - rail)
-        if dist > NEAR:
-            continue
-        if hold.c > rail and hold.delta < 0:
-            side = "Buy"
-        elif hold.c < rail and hold.delta > 0:
-            side = "Sell"
-        else:
-            continue
-        if best is None or dist < best[0]:
-            best = (dist, side, name, rail)
-    return best
-
-
-def tape_now(side, hold, live, rail):
-    px = live.c
-    if abs(px - rail) > NEAR:
-        return False
-    if side == "Buy":
-        return live.delta > 0 and px > hold.c and px > rail
-    return live.delta < 0 and px < hold.c and px < rail
-
-
 def pick(hold, lift, active):
     best = None
     for name, rail in active.items():
@@ -505,9 +476,9 @@ def main():
     emit(
         event="seven_start", fire=True, note=NOTE, symbol=SYMBOL,
         book={"qty": QTY, "stop": STOP, "tp": TP, "symbol": SYMBOL},
-        session_start="10:00", session_end="15:00", near=NEAR, atr_max=ATR_MAX,
-        tape="sniper_15", vol_src="databento_trades",
-        exit="flat_1500", quiet="off", relock="next_bar",
+        session_start="10:00", session_end="16:00", near=NEAR, atr_max=ATR_MAX,
+        tape="hold15_lift_close", vol_src="databento_trades",
+        exit="flat_1600", quiet="off",
         open=None if pos is None else pos[0],
         dead={k: v for k, v in quiet.items()},
     )
@@ -518,15 +489,13 @@ def main():
             discord_out(pos[0], pos[2], pos[3], pos[1], "startup")
             pos = finish(pos, quiet, "startup")
     seen = None
-    armed = None
-    atr_skip = None
     last_hb = 0.0
     while True:
         now = time.time()
         if now - last_hb > 60:
             emit(
                 event="heartbeat", note=NOTE, session=in_session(now),
-                quiet=len(quiet), open=None if pos is None else pos[0],
+                quiet=0, open=None if pos is None else pos[0],
             )
             last_hb = now
         if pos is not None:
@@ -538,7 +507,6 @@ def main():
             if bar.t0 + 60 <= pos[4]:
                 continue
             side, entry, name, rail, _ts = pos
-            # The broker stop and target own the exit. A bar wick is not a fill.
             bro = broker_open()
             net = None if not bro else bro.get("net")
             try:
@@ -563,85 +531,75 @@ def main():
             elif session_over(pos, bar.t0 + 60):
                 rc, out = send_flat()
                 emit(
-                    event="eod_flat", how="15:00", rc=rc, side=side,
+                    event="eod_flat", how="16:00", rc=rc, side=side,
                     poi=f"{name}@{rail:.2f}", mid=bar.c, out=out, note=NOTE,
                 )
                 if rc == 0:
                     discord_out(side, name, rail, entry, "eod", bar.c)
                     pos = finish(pos, quiet, "eod")
             continue
-        closed = vol.last_closed_1()
-        if closed is not None and closed.t0 != seen:
-            seen = closed.t0
-            armed = None
-            if in_session(closed.t0 + 60):
-                hit = arm_hold(closed, rails_asof(closed.t0 + 60))
-                if hit:
-                    armed = (closed, hit)
-        if armed is not None:
-            hold, (dist, side, name, rail) = armed
-            live = vol.live_1()
-            if live is not None and live.t0 > hold.t0 + 60:
-                armed = None
-            elif (
-                live is not None
-                and live.t0 == hold.t0 + 60
-                and in_session(now)
-                and tape_now(side, hold, live, rail)
-            ):
-                candles = vol.recent_closed_1(15)
-                atr = None if not candles or candles[-1].t0 != hold.t0 else atr14(candles)
-                if atr is None or atr >= ATR_MAX:
-                    if atr_skip != hold.t0:
-                        emit(
-                            event="score", reason="atr_unknown" if atr is None else "atr_hot",
-                            atr=None if atr is None else round(atr, 2),
-                            side=side, poi=f"{name}@{rail:.2f}", mid=live.c,
-                            dist=round(abs(live.c - rail), 2), note=NOTE,
-                        )
-                        atr_skip = hold.t0
-                    armed = None
-                else:
-                    px = live.c
-                    rc, out = send_book(side, name, rail, px, hold, live)
-                    fill = px
-                    armed = None
-                    if "oco_fail" in (out or "") or "position_open_no_exit" in (out or ""):
-                        send_flat()
-                        emit(
-                            event="naked_flat", side=side, poi=f"{name}@{rail:.2f}",
-                            mid=px, note=NOTE, out=out,
-                        )
-                    else:
-                        if rc != 0:
-                            bro = broker_open()
-                            try:
-                                net_i = int(bro.get("net") or 0) if bro else 0
-                                bro_px = float(bro.get("px") or 0) if bro else 0
-                            except (TypeError, ValueError):
-                                net_i, bro_px = 0, 0
-                            want = 1 if side == "Buy" else -1
-                            if net_i * want > 0:
-                                rc = 0
-                                if bro_px > 0:
-                                    fill = bro_px
-                                emit(
-                                    event="filled_on_fail", side=side, poi=f"{name}@{rail:.2f}",
-                                    mid=fill, net=net_i, note=NOTE, out=out,
-                                )
-                        emit(
-                            event="struct40_submit" if rc == 0 else "struct40_fail",
-                            submit=rc == 0, rc=rc, side=side, poi=f"{name}@{rail:.2f}",
-                            mid=fill, dist=round(abs(fill - rail), 2), atr=round(atr, 2),
-                            hold_delta=hold.delta, lift_delta=live.delta,
-                            hold_c=hold.c, lift_c=px, note=NOTE, out=out,
-                        )
-                        if rc == 0:
-                            pos = (side, fill, name, rail, time.time())
-                            save_state(pos, quiet)
-                            discord_in(side, name, rail, fill)
+        lift = vol.last_closed_1()
+        if lift is None or lift.t0 == seen:
+            time.sleep(0.25)
+            continue
+        seen = lift.t0
+        if not in_session(lift.t0):
+            time.sleep(0.25)
+            continue
+        candles = vol.recent_closed_1(15)
+        if len(candles) < 2 or candles[-1].t0 != lift.t0:
+            time.sleep(0.25)
+            continue
+        hold = candles[-2]
+        if lift.t0 - hold.t0 != 60:
+            time.sleep(0.25)
+            continue
+        hit = pick(hold, lift, rails_asof(lift.t0))
+        if hit is None:
+            time.sleep(0.25)
+            continue
+        dist, side, name, rail = hit
+        atr = atr14(candles) if len(candles) >= 15 else None
+        if atr is None or atr >= ATR_MAX:
+            emit(
+                event="score", reason="atr_unknown" if atr is None else "atr_hot",
+                atr=None if atr is None else round(atr, 2),
+                side=side, poi=f"{name}@{rail:.2f}", mid=lift.c,
+                dist=round(dist, 2), note=NOTE,
+            )
+            time.sleep(0.25)
+            continue
+        px = lift.c
+        rc, out = send_book(side, name, rail, px, hold, lift)
+        fill = px
+        if rc != 0:
+            bro = broker_open()
+            try:
+                net_i = int(bro.get("net") or 0) if bro else 0
+                bro_px = float(bro.get("px") or 0) if bro else 0
+            except (TypeError, ValueError):
+                net_i, bro_px = 0, 0
+            want = 1 if side == "Buy" else -1
+            if net_i * want > 0:
+                rc = 0
+                if bro_px > 0:
+                    fill = bro_px
+                emit(
+                    event="filled_on_fail", side=side, poi=f"{name}@{rail:.2f}",
+                    mid=fill, net=net_i, note=NOTE, out=out,
+                )
+        emit(
+            event="struct40_submit" if rc == 0 else "struct40_fail",
+            submit=rc == 0, rc=rc, side=side, poi=f"{name}@{rail:.2f}",
+            mid=fill, dist=round(abs(fill - rail), 2), atr=round(atr, 2),
+            hold_delta=hold.delta, lift_delta=lift.delta,
+            hold_c=hold.c, lift_c=px, note=NOTE, out=out,
+        )
+        if rc == 0:
+            pos = (side, fill, name, rail, time.time())
+            save_state(pos, quiet)
+            discord_in(side, name, rail, fill)
         time.sleep(0.25)
-
 
 if __name__ == "__main__":
     main()

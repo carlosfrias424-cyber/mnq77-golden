@@ -352,8 +352,8 @@ def fill_inside(side: str, fill: float, stop_px: float, tp_px: float) -> bool:
 
 def place_signal_oco(base, headers, spec, account_id, side, stop_px, tp_px, qty):
     exit_side = "Sell" if side == "Buy" else "Buy"
-    # A Stop uses price. stopPrice as well makes this a StopLimit, and Tradovate
-    # rejects that pair with the limit as Wrong OCO combination.
+    # Stop is stopPrice only. price plus stopPrice is a StopLimit, and Tradovate
+    # rejects that pair with the limit as the wrong OCO combination.
     body = {
         "accountSpec": spec,
         "accountId": account_id,
@@ -361,7 +361,7 @@ def place_signal_oco(base, headers, spec, account_id, side, stop_px, tp_px, qty)
         "symbol": SYMBOL,
         "orderQty": qty,
         "orderType": "Stop",
-        "price": stop_px,
+        "stopPrice": stop_px,
         "timeInForce": "Day",
         "isAutomated": True,
         "other": {
@@ -379,6 +379,31 @@ def place_signal_oco(base, headers, spec, account_id, side, stop_px, tp_px, qty)
         result = {"text": r.text[:400]}
     failed, order_id = order_failed(r.status_code, result)
     return failed, r.status_code, result, stop_px, tp_px, order_id
+
+
+def place_exit_leg(base, headers, spec, account_id, side, order_type, px, qty):
+    exit_side = "Sell" if side == "Buy" else "Buy"
+    body = {
+        "accountSpec": spec,
+        "accountId": account_id,
+        "action": exit_side,
+        "symbol": SYMBOL,
+        "orderQty": qty,
+        "orderType": order_type,
+        "timeInForce": "Day",
+        "isAutomated": True,
+    }
+    if order_type == "Stop":
+        body["stopPrice"] = px
+    else:
+        body["price"] = px
+    r = requests.post(base + "/order/placeorder", headers=headers, json=body, timeout=20)
+    try:
+        result = r.json()
+    except Exception:
+        result = {"text": r.text[:400]}
+    failed, order_id = order_failed(r.status_code, result)
+    return failed, r.status_code, result, order_id
 
 
 def main() -> int:
@@ -572,14 +597,7 @@ def main() -> int:
         )
         return 0
 
-    stop_px, tp_px = signal_band(side, signal, stop_pts, tp_pts)
-    if not fill_inside(side, fill, stop_px, tp_px):
-        log(
-            event="oco_through", side=side, signal=round(signal, 2), fill=fill,
-            stop=stop_px, target=tp_px, note="signal_price_already_through_fill",
-        )
-        flatten_mnq(base, h, account_id)
-        return 7
+    stop_px, tp_px = signal_band(side, fill, stop_pts, tp_pts)
 
     oco_failed = True
     oco_status = 0
@@ -593,13 +611,26 @@ def main() -> int:
             break
         time.sleep(0.25)
     if oco_failed:
-        log(
-            event="oco_fail", status=oco_status, side=side, signal=round(signal, 2),
-            fill=fill, qty=oco_qty, stop=stop_px, target=tp_px, result=oco_result,
-            note="position_open_no_exit",
+        stop_bad, stop_status, stop_result, stop_id = place_exit_leg(
+            base, h, spec, account_id, side, "Stop", stop_px, oco_qty,
         )
-        flatten_mnq(base, h, account_id)
-        return 7
+        limit_bad, limit_status, limit_result, limit_id = place_exit_leg(
+            base, h, spec, account_id, side, "Limit", tp_px, oco_qty,
+        )
+        if stop_bad or limit_bad:
+            log(
+                event="oco_fail", status=oco_status, side=side, signal=round(signal, 2),
+                fill=fill, qty=oco_qty, stop=stop_px, target=tp_px, result=oco_result,
+                stop_leg=stop_result, limit_leg=limit_result, note="position_open_no_flatten",
+            )
+            return 7
+        log(
+            event="oco_fire", status=200, side=side, symbol=symbol, qty=oco_qty,
+            signal=round(signal, 2), fill=fill, stop=stop_px, target=tp_px,
+            stop_pts=stop_pts, tp_pts=tp_pts, orderId=order_id,
+            stopId=stop_id, limitId=limit_id, note="two_legs_from_fill",
+        )
+        return 0
 
     log(
         event="oco_fire",
@@ -615,7 +646,7 @@ def main() -> int:
         tp_pts=tp_pts,
         orderId=order_id,
         ocoId=oco_id,
-        note="prices_from_signal",
+        note="prices_from_fill",
     )
     return 0
 
