@@ -137,6 +137,13 @@ class MnqVol:
         with self._lock:
             return self._last_px
 
+    def live_1(self) -> Optional[Candle]:
+        with self._lock:
+            cur = self.m1
+            if cur is None:
+                return None
+            return Candle(cur.t0, cur.o, cur.h, cur.l, cur.c, cur.v, cur.n, cur.delta)
+
     def last_closed_1(self) -> Optional[Candle]:
         with self._lock:
             return self.closed_1[-1] if self.closed_1 else None
