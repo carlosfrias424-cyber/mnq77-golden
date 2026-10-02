@@ -93,14 +93,16 @@ def in_session(dt):
 
 
 def pull(key):
-    print("PULL", flush=True)
-    data = db.Historical(key).timeseries.get_range(
+    client = db.Historical(key)
+    end = client.metadata.get_dataset_range(dataset="GLBX.MDP3")["end"]
+    print("PULL", end, flush=True)
+    data = client.timeseries.get_range(
         dataset="GLBX.MDP3",
         symbols="MNQZ6",
         stype_in="raw_symbol",
         schema="trades",
         start="2026-09-14T13:00:00Z",
-        end=datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        end=end,
     )
     bars = {}
     n = 0
