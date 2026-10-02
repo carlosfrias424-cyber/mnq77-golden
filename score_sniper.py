@@ -8,8 +8,8 @@ The next minute is watched print by print. The first print where the tape
 has turned, and price is still within 15 of the rail, is the fill.
 If that minute ends without one, there is no trade.
 
-CLOSE is what the last score did. It waits for that minute to finish,
-and it only enters if the close is still within 15.
+CLOSE waits for that minute to finish and enters only if the close is still within 15.
+LIVE is the bot that is running. Same minute close, but the close can be any distance.
 
 Stop 20, target 40, 5 MNQ. 10:00-15:00 CT.
 ATR of the last 14 minutes must be under 15. One position.
@@ -245,12 +245,12 @@ def score(alerts, bars, mode):
             continue
         _dist, side, name, rail = hit
         armed += 1
-        if mode == "close":
+        if mode in ("close", "live"):
             if side == "Buy":
                 ok = b["buy"] > b["sell"] and b["c"] > hold["c"] and b["c"] > rail
             else:
                 ok = b["sell"] > b["buy"] and b["c"] < hold["c"] and b["c"] < rail
-            if not ok or abs(b["c"] - rail) > NEAR:
+            if not ok or (mode == "close" and abs(b["c"] - rail) > NEAR):
                 continue
             entry = b["c"]
             fill_ts = b["prints"][-1][0] if b["prints"] else asof
@@ -343,10 +343,13 @@ def main():
     bars = pull(key)
     sniper, a1, f1 = score(alerts, bars, "sniper")
     close, a2, f2 = score(alerts, bars, "close")
+    live, a3, f3 = score(alerts, bars, "live")
     print(f"SNIPER_ARMED {a1}  FIRED {f1}", flush=True)
-    show("SNIPER  first print, still within 15. This is the bot.", sniper)
+    show("SNIPER  first print, still within 15.", sniper)
     print(f"CLOSE_ARMED {a2}  FIRED {f2}", flush=True)
-    show("CLOSE  minute close, only if that close is still within 15. Last score.", close)
+    show("CLOSE  minute close, only if that close is still within 15.", close)
+    print(f"LIVE_ARMED {a3}  FIRED {f3}", flush=True)
+    show("LIVE  minute close, any distance. This is the bot running now.", live)
 
 
 if __name__ == "__main__":
