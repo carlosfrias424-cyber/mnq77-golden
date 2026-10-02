@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -94,7 +94,9 @@ def in_session(dt):
 
 def pull(key):
     client = db.Historical(key)
-    end = client.metadata.get_dataset_range(dataset="GLBX.MDP3")["end"]
+    raw = str(client.metadata.get_dataset_range(dataset="GLBX.MDP3")["end"])
+    end_dt = datetime.fromisoformat(raw.replace("Z", "+00:00")) - timedelta(minutes=1)
+    end = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     print("PULL", end, flush=True)
     data = client.timeseries.get_range(
         dataset="GLBX.MDP3",
