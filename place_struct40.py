@@ -241,6 +241,91 @@ def working_mnq(base: str, headers: dict, account_id: int) -> list:
     return live
 
 
+def working_exits(base: str, headers: dict, account_id: int) -> tuple[int, int]:
+    """Working stop and target only. A market entry does not count."""
+    dead = {"Filled", "Canceled", "Cancelled", "Rejected", "Expired", "Completed"}
+    try:
+        raw = requests.get(base + "/order/list", headers=headers, timeout=20).json()
+    except Exception:
+        return 0, 0
+    orders = raw if isinstance(raw, list) else []
+    cache = {}
+    stops = limits = 0
+    for o in orders:
+        if int(o.get("accountId") or 0) != account_id:
+            continue
+        if str(o.get("ordStatus") or "") in dead:
+            continue
+        cid = int(o.get("contractId") or 0)
+        if cid <= 0 or contract_name(base, headers, cid, cache) != SYMBOL:
+            continue
+        kind = str(o.get("orderType") or "")
+        if kind == "Stop":
+            stops += 1
+        elif kind == "Limit":
+            limits += 1
+    return stops, limits
+
+
+def position_px(base: str, headers: dict, account_id: int) -> float:
+    try:
+        pos_raw = requests.get(base + "/position/list", headers=headers, timeout=20).json()
+    except Exception:
+        return 0.0
+    positions = pos_raw if isinstance(pos_raw, list) else []
+    cache = {}
+    px = 0.0
+    for p in positions:
+        if int(p.get("accountId") or 0) != account_id:
+            continue
+        try:
+            n = int(float(p.get("netPos") or 0))
+        except (TypeError, ValueError):
+            continue
+        if n == 0:
+            continue
+        cid = int(p.get("contractId") or 0)
+        if cid <= 0 or contract_name(base, headers, cid, cache) != SYMBOL:
+            continue
+        try:
+            px = float(p.get("netPrice") or 0)
+        except (TypeError, ValueError):
+            px = 0.0
+    return px
+
+
+def repair_mnq(base, headers, spec, account_id, stop_pts, tp_pts) -> int:
+    """Attach the stop and target to the open position. No new entry."""
+    net = mnq_net(base, headers, account_id)
+    if net == 0:
+        log(event="repair_flat", symbol=SYMBOL)
+        return 0
+    stops, limits = working_exits(base, headers, account_id)
+    if stops and limits:
+        log(event="repair_ok", net=net, stops=stops, limits=limits, note="already_protected")
+        return 0
+    side = "Buy" if net > 0 else "Sell"
+    px = position_px(base, headers, account_id)
+    if px <= 0:
+        log(event="repair_fail", reason="no fill price", net=net)
+        return 7
+    qty = min(abs(net), QTY)
+    failed, status, result, stop_px, tp_px, oco_id = place_signal_oco(
+        base, headers, spec, account_id, side, px, qty, stop_pts, tp_pts,
+    )
+    if failed:
+        log(
+            event="repair_fail", status=status, side=side, net=net, fill=px,
+            stop=stop_px, target=tp_px, result=result, note="still_naked",
+        )
+        return 7
+    log(
+        event="repair_ok", side=side, net=net, qty=qty, fill=px,
+        stop=stop_px, target=tp_px, ocoId=oco_id,
+    )
+    return 0
+
+
 def place_signal_oco(base, headers, spec, account_id, side, signal, qty, stop_pts, tp_pts):
     if side == "Buy":
         stop_px = on_tick(signal - stop_pts)
@@ -376,6 +461,9 @@ def main() -> int:
     if flatten:
         return flatten_mnq(base, h, account_id)
 
+    if os.environ.get("MNQ_REPAIR") == "1":
+        return repair_mnq(base, h, spec, account_id, stop_pts, tp_pts)
+
     if os.environ.get("MNQ_PLAIN") == "1":
         body = {
             "accountId": account_id,
@@ -458,11 +546,11 @@ def main() -> int:
     if fill is None:
         fill = on_tick(signal)
 
-    live = working_mnq(base, h, account_id)
-    if live:
+    stops, limits = working_exits(base, h, account_id)
+    if stops and limits:
         log(
-            event="oco_skipped", reason="working order already there",
-            orders=live, side=side, net=net, note="no_second_exit",
+            event="oco_skipped", reason="stop and target already working",
+            stops=stops, limits=limits, side=side, net=net, note="already_protected",
         )
         return 0
 
@@ -483,6 +571,7 @@ def main() -> int:
             fill=fill, qty=oco_qty, stop=stop_px, target=tp_px, result=oco_result,
             note="position_open_no_exit",
         )
+        flatten_mnq(base, h, account_id)
         return 7
 
     log(

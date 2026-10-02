@@ -562,6 +562,13 @@ def main():
             continue
         rc, out = send_book(side, name, rail, bar.c, hold, bar)
         fill = bar.c
+        if "oco_fail" in (out or "") or "position_open_no_exit" in (out or ""):
+            send_flat()
+            emit(
+                event="naked_flat", side=side, poi=f"{name}@{rail:.2f}",
+                mid=bar.c, note=NOTE, out=out,
+            )
+            continue
         if rc != 0:
             bro = broker_open()
             try:
