@@ -14,6 +14,14 @@ Review ~2026-09-26. Say **Ship pending tape_eye** to deploy. Dual stays off.
 
 Branch freeze of sniper15: `backup/sniper15-20260918`
 
+## Ferrari 458 shelf
+
+Not live. Do not curl these files over `live_77.py`.
+
+Frozen 2026-10-05. The pass that scored **60 trades, +747.8 points**. Rules, day card, and fills are in [shelf/ferrari_458](shelf/ferrari_458).
+
+The box backtest, same dates, is `shelf/ferrari_458/score_box_live.py`. It does not start the bot.
+
 ## Restore on CFrias
 
 Replace `COMMIT` with a hash from the table.
