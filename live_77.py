@@ -9,6 +9,7 @@ and that minute closes higher and above the rail. Short is the flip.
 That close is the fill. It can be farther than 15.
 The average range of the 14 minutes ending on that bar must be under 15.
 Skip ONH, ONL, EMA, OPEN. A rail is not locked after a trade.
+A rail counts when the minute closes if the alert arrived before that close.
 Still open at 16:00, flatten at that close.
 """
 from __future__ import annotations
@@ -44,7 +45,7 @@ SKIP = ("ONH", "ONL", "EMA", "OPEN")
 SUPPORT = {"H4L", "H1L", "PDL", "PWL", "SUPPORT"}
 RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
-NOTE = "fade_458"
+NOTE = "fade_458_rail_close"
 
 
 def envload():
@@ -601,7 +602,7 @@ def main():
         if lift.t0 - hold.t0 != 60:
             time.sleep(0.25)
             continue
-        hit = pick(hold, lift, rails_asof(lift.t0))
+        hit = pick(hold, lift, rails_asof(lift.t0 + 60))
         if hit is None:
             time.sleep(0.25)
             continue
