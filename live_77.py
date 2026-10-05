@@ -184,6 +184,48 @@ def discord_out(side, name, rail, entry, how, px=None):
     ])
 
 
+def fund_tell(side, name, rail, entry, kind):
+    """Tell the desk. Never changes the trade. A miss is only a log line."""
+    key = (os.environ.get("FUND_INGEST_KEY") or "").strip()
+    if not key:
+        emit(event="fund_skip", err="no ingest key", kind=kind, side=side)
+        return
+    stamp = f"{kind}|{side}|{name}|{rail}|{entry}"
+    path = ROOT / "logs/fund_posted.txt"
+    seen = set()
+    if path.exists():
+        seen = {ln.strip() for ln in path.read_text().splitlines() if ln.strip()}
+    if stamp in seen:
+        return
+    url = (os.environ.get("FUND_URL") or "https://www.thealgosfund.com").rstrip("/") + "/api/v1/ingest"
+    body = {
+        "side": side if kind == "in" else "Flatten",
+        "symbol": SYMBOL,
+        "qty": QTY,
+        "stop": STOP,
+        "tp": TP,
+        "be": 20,
+        "poi": f"{name}@{float(rail):.2f}",
+        "note": NOTE if kind == "in" else f"{NOTE} {kind}",
+    }
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as res:
+            res.read()
+            code = res.status
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(stamp + "\n")
+        emit(event="fund_ok", kind=kind, side=side, code=code)
+    except Exception as e:
+        emit(event="fund_fail", kind=kind, side=side, err=str(e)[:200])
+
+
 def sr_kind(name):
     u = (name or "").upper().strip()
     if not u or any(u.startswith(x) or u == x for x in SKIP):
@@ -487,7 +529,10 @@ def main():
         emit(event="eod_flat", how="startup", rc=rc, poi=f"{pos[2]}@{pos[3]:.2f}", out=out, note=NOTE)
         if rc == 0:
             discord_out(pos[0], pos[2], pos[3], pos[1], "startup")
+            fund_tell(pos[0], pos[2], pos[3], pos[1], "startup")
             pos = finish(pos, quiet, "startup")
+    if pos is not None:
+        fund_tell(pos[0], pos[2], pos[3], pos[1], "in")
     seen = None
     last_hb = 0.0
     while True:
@@ -527,6 +572,7 @@ def main():
                     poi=f"{name}@{rail:.2f}", mid=last, note=NOTE,
                 )
                 discord_out(side, name, rail, entry, how, None if how != "eod" else last)
+                fund_tell(side, name, rail, entry, how)
                 pos = finish(pos, quiet, how)
             elif session_over(pos, bar.t0 + 60):
                 rc, out = send_flat()
@@ -536,6 +582,7 @@ def main():
                 )
                 if rc == 0:
                     discord_out(side, name, rail, entry, "eod", bar.c)
+                    fund_tell(side, name, rail, entry, "eod")
                     pos = finish(pos, quiet, "eod")
             continue
         lift = vol.last_closed_1()
@@ -599,6 +646,7 @@ def main():
             pos = (side, fill, name, rail, time.time())
             save_state(pos, quiet)
             discord_in(side, name, rail, fill)
+            fund_tell(side, name, rail, fill, "in")
         time.sleep(0.25)
 
 if __name__ == "__main__":
