@@ -263,14 +263,8 @@ def main():
     client = db.Historical(key)
     start = datetime(DAY.year, DAY.month, DAY.day, 9, 30, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
     end = datetime(DAY.year, DAY.month, DAY.day, 16, 0, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
-    nu = nrec(client, "MNQU6", start, end)
-    nz = nrec(client, "MNQZ6", start, end)
-    if nz < 0 and nu < 0:
-        print("NO_TAPE", flush=True)
-        return
-    sym = "MNQZ6" if nz > nu else "MNQU6"
-    print("DAY", DAY.isoformat(), "U", nu, "Z", nz, "USE", sym, "BOT NOT TOUCHED", flush=True)
-    bars, n = pull_bars(client, sym, start, end)
+    print("DAY", DAY.isoformat(), "USE MNQZ6", "BOT NOT TOUCHED", flush=True)
+    bars, n = pull_bars(client, "MNQZ6", start, end)
     buy = sum(b["buy"] for b in bars.values())
     sell = sum(b["sell"] for b in bars.values())
     print(f"TRADES {n} BARS {len(bars)} TAPE B {buy:.0f} A {sell:.0f}", flush=True)
