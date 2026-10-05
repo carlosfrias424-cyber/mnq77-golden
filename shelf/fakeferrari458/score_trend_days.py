@@ -5,7 +5,9 @@ A strong trend day, 10:00 to 16:00 Chicago:
   the close-to-close move is at least 80 points
   and that move is at least half the day's high-low range.
 
-Does not start or edit the bot.
+No contract-count call. That call is what hung.
+September contract before 2026-09-15, December contract from that day on.
+Days already scored are skipped. Does not start or edit the bot.
 """
 import json
 import os
@@ -26,6 +28,17 @@ RESIST = {"H4H", "H1H", "PDH", "PWH", "RESISTANCE"}
 BARE = {"H4", "H1"}
 SKIP_F = ("ONH", "ONL", "EMA", "OPEN", "YEL", "HEALTHCHECK")
 SKIP_B = ("ONH", "ONL", "EMA", "OPEN")
+DONE = """
+2026-08-24	+61.0	199.0	0.31	0	1	+40.0	0	+0.0	MNQU6
+2026-08-25	+65.8	116.0	0.57	0	1	-20.0	0	+0.0	MNQU6
+2026-08-26	+182.8	267.2	0.68	1	4	+40.0	3	+0.0	MNQU6
+2026-08-27	+31.0	196.8	0.16	0	0	+0.0	0	+0.0	MNQU6
+2026-08-28	-298.0	374.8	0.80	1	0	+0.0	0	+0.0	MNQU6
+2026-08-31	+85.2	174.8	0.49	0	1	-20.0	1	-20.0	MNQU6
+2026-09-01	-100.2	315.5	0.32	0	5	+20.0	2	+20.0	MNQU6
+2026-09-02	+32.5	106.2	0.31	0	7	+100.0	2	+20.0	MNQU6
+2026-09-03	+121.8	223.0	0.55	1	2	+20.0	1	+40.0	MNQU6
+""".strip().splitlines()
 
 
 def envload():
@@ -100,18 +113,8 @@ def iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def nrec(client, sym, start, end):
-    try:
-        return int(client.metadata.get_record_count(
-            dataset="GLBX.MDP3", symbols=sym, schema="trades",
-            start=iso(start), end=iso(end), stype_in="raw_symbol",
-        ))
-    except Exception as e:
-        msg = str(e)
-        if "symbology" in msg or "422" in msg:
-            return 0
-        print("COUNT_FAIL", sym, msg[:120], flush=True)
-        return -1
+def symbol_for(d):
+    return "MNQU6" if d < date(2026, 9, 15) else "MNQZ6"
 
 
 def pull_bars(client, sym, start, end):
@@ -143,6 +146,16 @@ def pull_bars(client, sym, start, end):
         elif sg < 0:
             b["sell"] += -sg
     return bars, n
+
+
+def pull_safe(client, sym, start, end, d):
+    for attempt in (1, 2):
+        try:
+            print(f"PULL {d.isoformat()} {sym} try {attempt}", flush=True)
+            return pull_bars(client, sym, start, end)
+        except Exception as e:
+            print("PULL_FAIL", d.isoformat(), sym, str(e)[:140], flush=True)
+    return None
 
 
 def atr_of(keys, bars, i, gaps_ok):
@@ -262,6 +275,38 @@ def session_shape(bars):
     return move, span, abs(move) / span
 
 
+def load_done():
+    rows, seen = [], set()
+    text = ""
+    if OUT.exists():
+        text = OUT.read_text()
+    else:
+        text = "date\tmove\trange\teff\tstrong\tbox_n\tbox_pts\tfer_n\tfer_pts\tsymbol\n" + "\n".join(DONE) + "\n"
+        OUT.write_text(text)
+    for ln in text.splitlines():
+        if not ln.strip() or ln.startswith("date"):
+            continue
+        parts = ln.split("\t")
+        if len(parts) < 9 or parts[1] == "FAIL":
+            continue
+        d = date.fromisoformat(parts[0])
+        seen.add(d)
+        rows.append({
+            "date": d,
+            "ok": True,
+            "strong": parts[4] == "1",
+            "box": float(parts[6]),
+            "fer": float(parts[8]),
+            "move": float(parts[1]),
+        })
+    return rows, seen
+
+
+def append_line(line):
+    with OUT.open("a") as f:
+        f.write(line + "\n")
+
+
 def summarize(label, rows, key):
     print(label, flush=True)
     for name, pred in (
@@ -282,26 +327,23 @@ def main():
     client = db.Historical(key)
     box_alerts = load_alerts(SKIP_B)
     fer_alerts = load_alerts(SKIP_F)
+    rows, seen = load_done()
     print("BOT NOT TOUCHED", flush=True)
+    print("RESUME", len(seen), "days already scored. No contract-count call.", flush=True)
     print("STRONG = abs(10:00 to 16:00 move) >= 80 and move is at least half the day's range", flush=True)
-    rows = []
-    lines = ["date\tmove\trange\teff\tstrong\tbox_n\tbox_pts\tfer_n\tfer_pts\tsymbol"]
     d = FIRST
     while d <= LAST:
-        if d.weekday() < 5:
+        if d.weekday() < 5 and d not in seen:
             start = datetime(d.year, d.month, d.day, 9, 30, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
             end = datetime(d.year, d.month, d.day, 16, 0, tzinfo=TZ).astimezone(ZoneInfo("UTC"))
-            if d >= date(2026, 10, 1):
-                nu, nz = 0, nrec(client, "MNQZ6", start, end)
-            else:
-                nu, nz = nrec(client, "MNQU6", start, end), nrec(client, "MNQZ6", start, end)
-            if nz < 0 or (d < date(2026, 10, 1) and nu < 0):
+            sym = symbol_for(d)
+            got = pull_safe(client, sym, start, end, d)
+            if got is None:
                 print(d.isoformat(), "FAIL", flush=True)
-                rows.append({"date": d, "ok": False, "strong": False, "box": 0.0, "fer": 0.0})
-                lines.append(f"{d.isoformat()}\tFAIL")
+                append_line(f"{d.isoformat()}\tFAIL")
+                rows.append({"date": d, "ok": False, "strong": False, "box": 0.0, "fer": 0.0, "move": 0.0})
             else:
-                sym = "MNQZ6" if nz > nu else "MNQU6"
-                bars, n = pull_bars(client, sym, start, end)
+                bars, n = got
                 shape = session_shape(bars)
                 box = score(box_alerts, bars, "box")
                 fer = score(fer_alerts, bars, "ferrari")
@@ -319,7 +361,7 @@ def main():
                     flush=True,
                 )
                 rows.append({"date": d, "ok": True, "strong": strong, "box": bp, "fer": fp, "move": move})
-                lines.append(
+                append_line(
                     f"{d.isoformat()}\t{move:+.1f}\t{span:.1f}\t{eff:.2f}\t{int(strong)}\t"
                     f"{len(box)}\t{bp:+.1f}\t{len(fer)}\t{fp:+.1f}\t{sym}"
                 )
@@ -331,7 +373,6 @@ def main():
     for r in rows:
         if r["ok"] and r["strong"]:
             print(f"  {r['date'].isoformat()} move {r['move']:+.1f} BOX {r['box']:+.1f} FER {r['fer']:+.1f}", flush=True)
-    OUT.write_text("\n".join(lines) + "\n")
     print("WROTE", OUT, flush=True)
 
 
