@@ -50,3 +50,9 @@ grep seven_start /tmp/live_77.out | tail -n 1
 Confirm the start line `note`:
 - shelf6 → `yesterday_shelf6_rescore`
 - sniper15 → `sniper_live_15`
+
+## fakeferrari458
+
+Not a second live file. These are the rules already on the box, start note `fade_458`.
+
+Frozen 2026-10-05. **88 trades, 44 wins, 44 losses, profit factor 2.00, +847.8 points.** September 22 failed to pull. Card, fills, rules, and score are in [shelf/fakeferrari458](shelf/fakeferrari458). October 5 is separate: 5 trades, −100. Ferrari 458 stays in [shelf/ferrari_458](shelf/ferrari_458).
