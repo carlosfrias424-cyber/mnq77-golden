@@ -9,7 +9,8 @@ Frozen 2026-10-05. This is the book that scored **+747.8**. It is not the file r
 | Book | Stop 20, target 40. One position. No rail lock. |
 | Contract | MNQU6 until MNQZ6 has more trades that day, then MNQZ6. |
 | Tape | Databento trades. **B = buy, A = sell.** |
-| Hold | The hold minute trades the rail. |
+| Hold | The hold minute trades the rail. The next minute is the entry. Those two minutes are back to back. |
+| Rail clock | A rail counts if the alert arrived before the entry minute closed. |
 | Side | A named low is only a buy. A named high is only a sell. A bare H4 or H1 follows the hold close. |
 | Tape gate | Long: sellers larger on the hold, next minute buyers larger, that close higher and above the rail. Short is the flip. |
 | 15 points | On the **entry** close. Farther than 15, no trade. |

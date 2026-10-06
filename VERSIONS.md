@@ -24,7 +24,7 @@ Same book as [shelf/fakeferrari458](shelf/fakeferrari458). The only change from 
 
 Not live. Do not curl these files over `live_77.py`.
 
-Frozen 2026-10-05. The pass that scored **60 trades, +747.8 points**. Rules, day card, and fills are in [shelf/ferrari_458](shelf/ferrari_458).
+Frozen 2026-10-05. The pass that scored **60 trades, +747.8 points**. Same rail clock as the box: a rail counts if the alert arrived before the entry minute closed. Rules, day card, and fills are in [shelf/ferrari_458](shelf/ferrari_458).
 
 The box backtest, same dates, is `shelf/ferrari_458/score_box_live.py`. It does not start the bot.
 
