@@ -6,13 +6,19 @@ Dual stays UNPLUGGED. Book: 5×1, 20/40, BE off.
 |---|---|---|---|
 | `shelf6` | `bca3cc8cb7290815c20275c40c82263d1b947b7b` | 1m **close** must sit within **6** of rail | 5m delta already our color |
 | `sniper10` | `ae82b242d52e04a0ef0e4641401ca96a9f7ffc7e` | **live**, fill ≤10 off rail | same 5m |
-| `sniper15` (current live) | `478b24416bc8285aba5563f9b0b613d9c98e902f` + session **04:00–16:00 CT** | **live**, fill ≤**15** off rail | same 5m |
+| `sniper15` | `478b24416bc8285aba5563f9b0b613d9c98e902f` + session **04:00–16:00 CT** | **live**, fill ≤**15** off rail | same 5m |
 | `tape_eye` PARKED | live_77 `e50cc5c` + mnq_vol `6170ccc` | same sniper15 | 30s flip / 5m dying; 5s never veto |
 
 Parked spec: [pending/tape_eye.md](pending/tape_eye.md) · [issue #1](https://github.com/carlosfrias424-cyber/mnq77-golden/issues/1)
 Review ~2026-09-26. Say **Ship pending tape_eye** to deploy. Dual stays off.
 
 Branch freeze of sniper15: `backup/sniper15-20260918`
+
+## On the box
+
+`fade_458_rail_close` at `e67402bece7c127ecd4500dfb6ad3c94b2b1dc81`. Loaded 2026-10-05. Start note must be `fade_458_rail_close`.
+
+Same book as [shelf/fakeferrari458](shelf/fakeferrari458). The only change from `fade_458` is the rail clock. A rail counts if the alert arrived before the entry minute closed. The score already used that clock. The box now does too.
 
 ## Ferrari 458 shelf
 
@@ -28,7 +34,8 @@ Replace `COMMIT` with a hash from the table.
 
 ```bash
 ROOT=/home/administrator/.openclaw/workspace/mnq_hybrid
-COMMIT=478b24416bc8285aba5563f9b0b613d9c98e902f   # sniper15
+COMMIT=e67402bece7c127ecd4500dfb6ad3c94b2b1dc81   # fade_458_rail_close, on the box
+# COMMIT=478b24416bc8285aba5563f9b0b613d9c98e902f   # sniper15 (go back)
 # COMMIT=bca3cc8cb7290815c20275c40c82263d1b947b7b   # shelf6 (go back)
 B=https://raw.githubusercontent.com/carlosfrias424-cyber/mnq77-golden/$COMMIT
 curl -fsSL "$B/live_77.py" -o "$ROOT/apps/watcher7/live_77.py"
@@ -48,11 +55,12 @@ grep seven_start /tmp/live_77.out | tail -n 1
 ```
 
 Confirm the start line `note`:
+- fade_458_rail_close → `fade_458_rail_close`
 - shelf6 → `yesterday_shelf6_rescore`
 - sniper15 → `sniper_live_15`
 
 ## fakeferrari458
 
-Not a second live file. These are the rules already on the box, start note `fade_458`.
+Not a second live file. These are the rules on the box, start note `fade_458_rail_close`.
 
 Frozen 2026-10-05. **88 trades, 44 wins, 44 losses, profit factor 2.00, +847.8 points.** September 22 failed to pull. Card, fills, rules, and score are in [shelf/fakeferrari458](shelf/fakeferrari458). October 5 is separate: 5 trades, −100. Ferrari 458 stays in [shelf/ferrari_458](shelf/ferrari_458).
