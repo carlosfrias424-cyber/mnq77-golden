@@ -87,6 +87,34 @@ def load_alerts():
     return rows, raw
 
 
+def parse_db_time(raw):
+    if not isinstance(raw, str):
+        return raw.astimezone(TZ)
+    s = raw.strip().replace("Z", "+00:00")
+    if "." in s:
+        head, rest = s.split(".", 1)
+        cut = len(rest)
+        for i, ch in enumerate(rest):
+            if ch in "+-":
+                cut = i
+                break
+        frac, tz = rest[:cut], rest[cut:]
+        s = head + "." + (frac + "000000")[:6] + tz
+    return datetime.fromisoformat(s).astimezone(TZ)
+
+
+def tape_end(key):
+    want = datetime.now(TZ) - timedelta(minutes=5)
+    try:
+        meta = db.Historical(key).metadata.get_dataset_range(dataset="GLBX.MDP3")
+        raw = meta["end"] if isinstance(meta, dict) else meta.end
+        avail = parse_db_time(raw) - timedelta(minutes=1)
+        return min(want, avail)
+    except Exception as e:
+        print("RANGE", str(e)[:160], flush=True)
+        return want - timedelta(minutes=25)
+
+
 def px_of(rec):
     raw = getattr(rec, "pretty_price", None)
     if raw is not None:
@@ -332,7 +360,7 @@ def main():
         a1 = datetime.fromtimestamp(alerts[-1][0], TZ)
         print("ALERT_SPAN", a0.isoformat(), a1.isoformat())
     key = os.environ.get("DATABENTO_API_KEY") or os.environ["DATABENTO_KEY"]
-    end = datetime.now(TZ) - timedelta(minutes=5)
+    end = tape_end(key)
     bars = pull_bars(key, TAPE_START, end)
     show("CURRENT", *run("current", alerts, bars))
     show("PROPOSED", *run("proposed", alerts, bars))
